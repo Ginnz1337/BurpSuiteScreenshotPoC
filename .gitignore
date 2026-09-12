@@ -12,3 +12,6 @@
 *.iml
 .vscode/
 Thumbs.db
+
+# Reference clone of the Caido plugin. Nested git repo, not part of this project.
+/screenshot-mode/
