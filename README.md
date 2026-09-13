@@ -16,11 +16,13 @@ key before it reaches a report, hide noisy headers such as `Sec-Fetch-*`, or cut
 report does not need, this extension is that.
 
 ---
+
 ## Demo
+
 https://github.com/user-attachments/assets/d0acf7a2-6bd1-4c88-b299-5a2999175cd5
-[Watch the demo (MP4, 2.4 MB)](https://github.com/user-attachments/assets/d0acf7a2-6bd1-4c88-b299-5a2999175cd5)
 
 ---
+
 ## Current Version
 
 **1.0.0**
