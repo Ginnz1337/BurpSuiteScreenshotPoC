@@ -101,7 +101,7 @@ in Burp those keys belong to Burp.
 ## Project Structure
 
 ```
-Burp-Suite-Screenshot-PoC/
+BurpSuiteScreenshotPoC/
 ├── build.ps1                      Build and verify (PowerShell, the supported path)
 ├── build.bat                      Build and verify (cmd)
 ├── lib/
