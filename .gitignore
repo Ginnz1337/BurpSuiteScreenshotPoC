@@ -7,11 +7,26 @@
 # Assembled extension jar.
 /burp-screenshot-poc.jar
 
+# The Montoya API jar. Not committed: it is covered by the Burp Suite Professional licence,
+# which grants no right to redistribute it, so build.ps1 downloads it from Maven Central on
+# the first build. It is compile-only and never enters the extension jar.
+/lib/montoya-api-*.jar
+
 # Editor and OS noise.
 .idea/
 *.iml
 .vscode/
 Thumbs.db
 
+# Local Claude Code settings. Machine-specific, not part of the project.
+.claude/
+
 # Reference clone of the Caido plugin. Nested git repo, not part of this project.
 /screenshot-mode/
+
+# Screen recordings. The README plays a video hosted on GitHub's attachment CDN, never a file
+# in the repo: GitHub strips the video tag for every host except github.com/user-attachments,
+# so a committed recording would sit there unplayable and only add weight.
+*.wmv
+*.mp4
+*.mov

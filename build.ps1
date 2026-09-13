@@ -34,7 +34,27 @@ if ($javaHome) {
 Write-Host "[+] Using compiler: $javac"
 & $javac -version
 
-# 2. Prepare directories
+# 2. Fetch the Montoya API jar when it is not already there.
+#    It is deliberately not committed. The jar is covered by the Burp Suite Professional
+#    licence, which grants no right to redistribute it, so it is pulled from Maven Central
+#    on the first build instead. It is compile-only and never enters the extension JAR.
+$montoya = "lib\montoya-api-2023.12.1.jar"
+if (-not (Test-Path $montoya)) {
+    Write-Host "[+] $montoya is missing. Downloading from Maven Central..."
+    New-Item -ItemType Directory -Force -Path "lib" | Out-Null
+    $montoyaUrl = "https://repo1.maven.org/maven2/net/portswigger/burp/extensions/montoya-api/2023.12.1/montoya-api-2023.12.1.jar"
+    try {
+        Invoke-WebRequest -Uri $montoyaUrl -OutFile $montoya -UseBasicParsing
+    } catch {
+        if (Test-Path $montoya) { Remove-Item -Force $montoya }
+        Write-Host "[-] Download failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "    Fetch it by hand from $montoyaUrl" -ForegroundColor Yellow
+        Write-Host "    and save it as $montoya." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+# 3. Prepare directories
 $buildDir = "build"
 $classesDir = "$buildDir\classes"
 $libsDir = "$buildDir\libs"
@@ -43,20 +63,20 @@ if (Test-Path $classesDir) { Remove-Item -Recurse -Force $classesDir }
 New-Item -ItemType Directory -Force -Path $classesDir | Out-Null
 New-Item -ItemType Directory -Force -Path $libsDir | Out-Null
 
-# 3. Extract bundled libraries (Gson) into the classes directory for a fat JAR
+# 4. Extract bundled libraries (Gson) into the classes directory for a fat JAR
 Write-Host "[+] Unpacking dependencies for Fat JAR..."
 Push-Location $classesDir
 & $jar -xf "..\..\lib\gson-2.10.1.jar"
 if (Test-Path "META-INF\MANIFEST.MF") { Remove-Item -Force "META-INF\MANIFEST.MF" }
 Pop-Location
 
-# 4. Find all java source files
+# 5. Find all java source files
 $sources = Get-ChildItem -Recurse -Filter "*.java" -Path "src\main\java" |
     Select-Object -ExpandProperty FullName
 $sourcesFile = "$buildDir\sources.txt"
 $sources | Out-File -FilePath $sourcesFile -Encoding ascii
 
-# 5. Compile with --release 17 for the widest Burp compatibility
+# 6. Compile with --release 17 for the widest Burp compatibility
 Write-Host "[+] Compiling Java source files..."
 $classpath = "lib\montoya-api-2023.12.1.jar;lib\gson-2.10.1.jar"
 & $javac --release 17 -encoding UTF-8 -Xlint:-options -cp $classpath -d $classesDir "@$sourcesFile"
@@ -66,7 +86,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 6. Package the JAR
+# 7. Package the JAR
 $outputJar = "$libsDir\burp-screenshot-poc.jar"
 Write-Host "[+] Packaging into $outputJar..."
 & $jar -cf $outputJar -C $classesDir .
@@ -76,7 +96,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 7. Run the verification tests.
+# 8. Run the verification tests.
 #    -ea is not optional: every check in the suite is an assert, and the JVM skips them
 #    silently without it, so a green run would prove nothing.
 Write-Host "[+] Running verification tests..."

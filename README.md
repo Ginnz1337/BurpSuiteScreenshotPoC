@@ -1,229 +1,279 @@
-# PoC Screenshot Studio for Burp Suite (Caido-style)
+# Burp Suite Screenshot PoC
 
-Extension cho Burp Suite: chụp Request/Response thành ảnh Proof of Concept sạch sẽ, đủ đẹp để dán thẳng vào báo cáo Pentest hoặc Bug Bounty. Thiết kế lấy cảm hứng từ plugin Screenshot của Caido.
+A Burp Suite extension for taking clean, report-ready screenshots of HTTP requests and responses
+from Repeater, Logger and Proxy.
 
-Project: `D:\Tools\burp_extension\burp_screenshot_poc_project`
+Screenshot PoC adds a `ScreenshotPoC` tab to Burp's message editors. The tab renders the request
+or the response as a syntax-coloured, read-only text view with the browser noise headers hidden,
+the secrets blurred, and the evidence highlighted. Take the screenshot with any screen capture
+tool and paste it straight into a pentest or bug bounty report.
 
-Toàn bộ nhãn trong giao diện là **tiếng Anh**. Tài liệu này giữ tiếng Việt; tên nút và tên mục được
-ghi đúng như chữ hiện trên màn hình, trong dấu nháy.
+It renders no image. It draws text in Burp's own colours, so the PoC screenshot reads the way
+Burp itself reads.
 
----
-
-## Tính năng
-
-**Một workspace, ảnh và text cùng thấy một lúc**
-- Ảnh render ở trên, khung text ở dưới, divider kéo được. Không còn hai tab tách rời phải bấm qua lại.
-- Khung text **sửa được**. Sửa xong, ảnh render lại theo sau khoảng 150ms, caret không nhảy.
-- Nút `Reset` trả về đúng dữ liệu Burp gốc.
-- Thanh trên khung text có `Request` / `Response` và ô tìm kiếm `Search in the text (Ctrl+F)`.
-- Nút `Text` trên toolbar có menu `Copy request`, `Copy response`, `Copy edited request`,
-  `Copy edited response`, `Copy both`.
-
-**Bảo mật thông tin trước khi chụp**
-- Redaction theo regex hoặc chuỗi thường, ba kiểu che: `Blur`, `Blackout`, `Mask`.
-- Hỗ trợ capture group: `Bearer\s+([A-Za-z0-9._-]+)` chỉ che phần token, giữ chữ `Bearer `.
-- Rule mẫu sẵn một cú nhấp: `Bearer token`, `session_id`, `Cookie`, `password`, `api_key`, `JWT`, `SQLi`, `XSS`, `Admin`.
-- Ô pattern có placeholder nói rõ regex dùng được, ví dụ
-  `Regex or literal, e.g. Bearer\s+([A-Za-z0-9._-]+)`, kèm nhãn nhỏ `Regex supported`.
-
-**Làm nổi bật bằng chứng**
-- Highlight rule tô nền + viền quanh payload khai thác hoặc dữ liệu quan trọng.
-- Highlight được vẽ trước, redaction vẽ sau, nên vùng che luôn đè lên vùng tô. Không thể vô tình để lộ token chỉ vì nó nằm trong một khung highlight.
-- Highlight và redaction chạy lại trên **bản text đã sửa**, không phải bản gốc.
-
-**Ảnh render**
-- Bố cục `Side by Side` hoặc `Stacked`.
-- Bề rộng `Compact (800px)` / `Medium (1000px)` / `Wide (1200px)` / `Full Width`.
-- Scale `1x` / `2x` / `3x`. Ảnh được vẽ lại ở đúng scale, không phóng to bitmap, nên 2x nét thật.
-- Cắt dòng `1-6, 15-30` cho request và response riêng.
-- Thanh URL **tự xuống dòng** khi URL dài, tối đa 3 dòng, quá thì dòng cuối dùng dấu ba chấm giữa.
-  Chiều cao card tăng theo số dòng. Chữ không còn ghi đè lên nhau.
-- Thẻ card theo phong cách Caido: thanh URL, hairline phân mục, gutter số dòng, footer timestamp và
-  kích thước response, bo góc và đổ bóng.
-
-**Màu cú pháp**
-- Màu lấy theo Burp Repeater, tách bạch từng thành phần: tên header, giá trị header, path, query key, query value, body.
-- Sửa được ngay trong app tại `Settings` > `Syntax colors`, không cần build lại.
-
-**Giao diện**
-- Toolbar ở trên, ảnh trên text ở giữa, inspector dock bên phải với hai tab `Settings` và `Rules`.
-- Theme tự theo Burp (dark/light), đổi trong khoảng 1 giây, không cần mở lại cửa sổ. Có thể ghi đè thủ công.
-- Scrollbar mỏng, hover và focus ring rõ. Không đụng vào giao diện của Burp.
+If you are looking for a way to screenshot a Burp Suite request, blur a session cookie or an API
+key before it reaches a report, hide noisy headers such as `Sec-Fetch-*`, or cut the lines the
+report does not need, this extension is that.
 
 ---
 
-## Cài đặt vào Burp Suite
+## Current Version
 
-File JAR:
+**1.0.0**
 
-```
-D:\Tools\burp_extension\burp_screenshot_poc_project\build\libs\burp-screenshot-poc.jar
-```
+### Version History
 
-1. Mở Burp Suite.
-2. Vào `Extensions` > tab con `Installed`.
-3. Bấm `Add`.
-4. `Extension type`: chọn `Java`.
-5. `Extension file`: trỏ tới file JAR ở trên.
-6. `Next`, rồi `Close`.
-
-Log khi nạp thành công:
-
-```
-PoC Screenshot Studio loaded.
-  Right-click a request: Open PoC Screenshot Studio, or Quick Copy PoC Screenshot.
-  A "PoC" tab is available in Repeater and Logger.
-```
-
-Khi cập nhật code: build lại, rồi vào `Installed` bấm `Reload` ở extension này.
+| Version | Date       | Summary                                                                                                                                                                                         |
+| ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0.0   | 2026-09-13 | First release. `ScreenshotPoC` tab in Repeater, Logger and Proxy, on the request and the response. Header hiding, line removal, highlight and redaction rules, gutter selection, search, undo. |
 
 ---
 
-## Sử dụng
+## Main Features
 
-### Mở Studio
-
-Chuột phải một request trong Proxy history, Repeater, Logger hoặc Target, chọn `Extensions` > `Open PoC Screenshot Studio`, hoặc bấm `Ctrl + Shift + S`.
-
-Cửa sổ mở ra với ảnh trên, khung text dưới, inspector bên phải. Chỉnh xong thì `Save PNG` hoặc `Copy image`.
-
-**Từ Proxy history thì chuột phải là đường duy nhất.** Montoya API `2023.12.1` không có API phím
-tắt toàn cục. `UserInterface` chỉ có `menuBar`, `registerSuiteTab`,
-`registerContextMenuItemsProvider`, `registerHttpRequestEditorProvider`,
-`registerHttpResponseEditorProvider`, `registerWebSocketMessageEditorProvider`, `createRawEditor`,
-`createHttpRequestEditor`, `createHttpResponseEditor`, `createWebSocketMessageEditor`,
-`applyThemeToComponent`, `currentTheme`, `currentEditorFont`, `currentDisplayFont`, `swingUtils`.
-`setAccelerator` trên `JMenuItem` chỉ ăn khi menu đang mở, không phải phím tắt toàn cục. Nên
-`Ctrl + Shift + S` chỉ có tác dụng khi cửa sổ Studio đang mở, còn lối vào từ Proxy history luôn là
-menu chuột phải.
-
-### Sửa text trong Studio
-
-Khung text dưới ảnh gõ được. Sửa một header hay đổi dòng request thành `POST /x HTTP/2` thì ảnh đổi
-theo, kể cả thanh URL và badge method. Nút `Reset` xóa toàn bộ sửa đổi và trả về dữ liệu Burp gốc.
-
-Số dòng ở gutter tăng dần theo tài liệu, không phải số dòng của message gốc. Chèn hoặc xóa dòng sẽ
-làm hai con số lệch nhau; đây là giới hạn đã biết, không phải lỗi.
-
-### Copy nhanh
-
-Chuột phải request, chọn `Extensions` > `Quick Copy PoC Screenshot (Default)`, hoặc bấm `Ctrl + Shift + C`. Ảnh render ở 2x theo template `Default` và vào clipboard ngay, không mở cửa sổ.
-
-### Tab Screenshot PoC
-
-Tab riêng trong Burp, dùng để chỉnh template và xem thử. Tab hiện badge `Sample data` khi chưa có request thật, và badge `Live traffic` sau khi bạn mở Studio từ một request.
-
-### Tab PoC trong Repeater và Logger
-
-Mở một request trong Repeater hoặc Logger: cạnh các tab editor có thêm tab `PoC`, hiện luôn ảnh
-render của request đang xem. Tab có nút `Copy image`, `Save PNG`, `Open studio`, và một nút icon
-fit khung (tooltip `Fit to the tab (Ctrl+0)`).
-
-Chuyển sang request khác thì tab cập nhật theo. Tab này **không** xuất hiện ở Proxy intercept,
-Intruder hay Scanner: provider trả `null` khi `ToolSource` không phải Repeater hoặc Logger.
-
-Tab PoC chỉ đọc, không sửa request. `getRequest()` trả về đúng request nhận được và `isModified()`
-luôn `false`, nên không có chuyện ảnh PoC làm lệch request thật.
-
-### Phím tắt
-
-Trong cửa sổ Studio:
-
-| Phím | Tác dụng |
-|---|---|
-| `Ctrl + S` | `Save PNG` |
-| `Ctrl + Shift + C` | `Copy image` vào clipboard |
-| `F5` | Render lại |
-| `Ctrl + 0` | Vừa khung nhìn |
-| `Ctrl + =` / `Ctrl + +` | Phóng to |
-| `Ctrl + -` | Thu nhỏ |
-| `Ctrl + F` | Đưa con trỏ vào ô `Search in the text` |
-| `Esc` | Đóng cửa sổ |
-
-Trong tab `PoC` của Repeater và Logger: `Ctrl + S`, `Ctrl + Shift + C`, `F5`, `Ctrl + 0`,
-`Ctrl + =`, `Ctrl + -`. Không có `Ctrl + F` và không có `Esc`.
-
-`Esc` và phím tắt gắn cửa sổ chỉ hoạt động khi Studio mở dạng cửa sổ riêng. Trong tab Screenshot
-PoC, phím tắt gắn với tab chứ không gắn toàn cục, để không cướp `Ctrl + S` của Burp khi bạn đang
-làm việc ở Repeater. Tab `PoC` cũng vậy: binding nằm trên chính panel, chỉ ăn khi con trỏ đang ở
-trong tab đó.
-
-### Kéo mép để đổi bề rộng
-
-Mép phải card có một **thanh kéo luôn hiện**: pill bo tròn ba chấm, vẽ đè lên ảnh ở cả hai mép. Rê
-chuột vào mép, con trỏ đổi thành mũi tên ngang, kéo để đổi bề rộng wrap. Lúc kéo, badge hiện
-`<số> px  ·  drag to resize`, và đường nét đứt hiện dọc mép. Nháy đúp để về mặc định.
-
-Thanh kéo bám theo phép biến đổi ảnh sang component, nên ở zoom 200% nó vẫn nằm đúng mép card.
+- **`ScreenshotPoC` tab in Repeater, Logger and Proxy**, on both the request and the response.
+  Read-only: `isModified()` is always `false`, so the tab can never alter the message. The
+  response tab stays hidden until a response exists.
+- **Syntax colouring matching Burp**: method, URL parts, header name and value, status, JSON,
+  HTML, form fields, each with its own colour in both the dark and the light theme.
+- **Header hiding** from a plain list, one name per line. `Prefix*` matches by prefix, `!Name`
+  always shows. Fifteen noisy browser headers are hidden by default, and
+  `Add names from this message` fills the list from the message on screen.
+- **Line removal by original line number**, for the request and the response separately,
+  for example `17-25, 30-38`. The numbers are the ones the gutter prints. Removed lines leave
+  `··· [N lines omitted] ···`, and each field reports `15 lines removed` or names a bad entry.
+- **Highlight and redaction rules**, literal or regex with a capture group, scoped to the
+  request, the response, or both. Eleven presets ship with the extension, and seven redaction
+  rules are on by default.
+- **Blur that hides the value but keeps the shape.** Coordinate-keyed noise, not a black box, so
+  two screenshots of one message are identical. A redaction can also hide its match outright.
+- **Right-click menus** in the text for highlight, blur, hide and rule removal, and in the
+  gutter to remove a dragged range of lines.
+- **Wrap, gutter and search.** Long lines break at the pane edge, including tokens with no
+  space in them. The gutter keeps the original line numbers. `Ctrl + F` searches with a count.
+- **Undo** with `Ctrl + Z`, fifty steps, including the settings dialog as one step.
+- **Burp theme tracking**, no reload needed. Nothing global is changed: `UIManager.put` and
+  `updateComponentTreeUI` are never called, so no other extension or Burp window is affected.
+- **No rebuild for the same message.** Burp re-pushes the message on every tab switch; an
+  unchanged message is not rebuilt, so `ScreenshotPoC` → `Pretty` → `ScreenshotPoC` is free.
 
 ---
 
-## Đối chiếu bảng màu
+## Common questions
 
-Bảng màu cú pháp lấy từ hai ảnh Burp Repeater thật. Mã hex được **đo bằng pixel**, không ước
-lượng bằng mắt. Bảng đầy đủ và ảnh gốc nằm trong [reference/](reference/README.md).
+**How do I screenshot a request or a response in Burp Suite?**
+Open the message in Repeater, Logger or Proxy, click the `ScreenshotPoC` tab, and capture that
+area with any screen capture tool. The tab is there on both the request and the response.
 
-Sau mỗi lần build, script test xuất hai ảnh để so trực tiếp với Repeater:
+**How do I blur a password, cookie, bearer token or API key before it reaches the report?**
+Select the value, right-click, and choose `Blur`. Seven credential rules are on by default, so
+most secrets are already covered before you look.
 
-```
-build\palette_dark.png
-build\palette_light.png
-```
+**Can I hide the browser noise headers?**
+Yes. Fifteen noisy headers ship hidden, among them `Accept`, `Sec-Fetch-*`, `Sec-Ch-Ua-*`,
+`Connection` and `Priority`. The list is editable and takes prefixes and exceptions.
 
-Mỗi dòng là một thành phần: tên, chữ mẫu vẽ đúng màu và đúng font, và mã hex. Chỗ nào lệch thì
-sửa tại `Settings` > `Syntax colors`, hoặc sửa thẳng `SyntaxPalette.defaults()` trong code.
+**Can I remove lines from the screenshot?**
+Yes. Drag over their numbers in the gutter and right-click, or type a range such as
+`17-25, 30-38` in the settings. The numbers are the original message line numbers.
 
-Ba điểm đáng nhớ, đều đo được từ ảnh:
+**Does it work in Proxy, Intruder and Scanner?**
+Repeater, Logger and Proxy, on the request and on the response. Not in Intruder or Scanner.
 
-- Tên header và đường dẫn URL là **hai màu xanh khác nhau**. Nền sáng: `#000075` so với
-  `#0000c0`. Nền tối: `#d1e8f9` so với `#bbcdff`.
-- Giá trị (header value, query value) là màu trung tính ở nền sáng và xám sáng ở nền tối.
-- Repeater cho path và query key **cùng một màu**. Bảng màu theo đúng như vậy. Ba nhóm header /
-  URL / body thì vẫn khác màu nhau, đó mới là điều kiện để ảnh chụp dễ đọc.
-
-Ảnh render hiện tại để so: `reference/after/poc-render-dark.png`, `poc-render-light.png`.
-Ảnh bản cũ để so: `reference/before/`.
+**Will it change the rest of my Burp Suite?**
+No. It never calls `UIManager.put`, and only its own scroll bars are restyled.
 
 ---
 
-## Build từ source
+## Hotkeys
 
-Yêu cầu: một JDK từ 17 trở lên. Script tự dò bản mới nhất trong `C:\Program Files\Java`, hoặc dùng `JAVA_HOME` nếu biến này trỏ tới một JDK hợp lệ.
+| Key          | Action                                 |
+| ------------ | -------------------------------------- |
+| `Ctrl + F` | Focus the search field                 |
+| `Ctrl + Z` | Undo the last configuration change     |
+| `F5`       | Rebuild the view for the current theme |
+
+All three are bound on the tab panel and only fire while the caret is inside the tab. Elsewhere
+in Burp those keys belong to Burp.
+
+---
+
+## Project Structure
+
+```
+Burp-Suite-Screenshot-PoC/
+├── build.ps1                      Build and verify (PowerShell, the supported path)
+├── build.bat                      Build and verify (cmd)
+├── lib/
+│   ├── gson-2.10.1.jar            Bundled into the fat JAR
+│   └── montoya-api-2023.12.1.jar  Not committed. The build downloads it, compile only
+├── src/main/java/burp/screenshot/
+│   ├── BurpExtender.java          Entry point: the two editor providers, the theme source
+│   ├── design/                    Tokens, theme, syntax palette, token types, icons
+│   ├── engine/                    Syntax highlighter, text processor, rules, template file
+│   ├── model/                     Config, rules, undo history, exchange data
+│   └── ui/                        The tab, the text view, the menus, the settings dialog
+│       └── components/            Buttons, fields, toggle, segmented control, scroll bars
+├── src/test/java/burp/screenshot/
+│   └── ScreenshotVerificationTest.java   The verification suite
+├── licenses/
+│   └── Apache-2.0.txt             Gson's license, which the fat JAR redistributes
+├── LICENSE                        GNU General Public License v3.0
+└── README.md
+```
+
+---
+
+## System Requirements
+
+- **Burp Suite** with the Montoya API 2023.12.1 or newer.
+- **JDK 17 or newer** to build from source. The code targets Java 17.
+- **Windows** for `build.ps1` and `build.bat`, which look for a JDK under
+  `C:\Program Files\Java`, then `JAVA_HOME`, then `PATH`. The Java source is portable.
+
+---
+
+## Dependencies
+
+| Dependency  | Version   | Scope                                                         |
+| ----------- | --------- | ------------------------------------------------------------- |
+| Montoya API | 2023.12.1 | Compile only. Burp provides it at runtime.                    |
+| Gson        | 2.10.1    | Bundled into the fat JAR. Reads and writes the settings file. |
+
+`gson-2.10.1.jar` is committed. `montoya-api-2023.12.1.jar` is not: the build downloads it from
+Maven Central on the first run, because the Burp Suite Professional licence grants no right to
+redistribute it. There is no test framework: the verification suite is a plain `main` class with
+assertions.
+
+---
+
+## Installation
+
+### Build from source
 
 ```powershell
 .\build.ps1
 ```
 
-hoặc:
+or `build.bat`. The first run downloads `lib\montoya-api-2023.12.1.jar` from Maven Central, so it
+needs a network connection; later runs reuse the file. The script compiles with `--release 17`,
+packages `build\libs\burp-screenshot-poc.jar`, then runs the verification suite with `-ea`. A
+failed check exits non-zero. The suite runs after packaging, so a failing build still leaves a JAR
+behind: read the exit status, not the JAR timestamp.
 
-```cmd
-build.bat
-```
+### Load into Burp Suite
 
-Script làm bốn việc: biên dịch với `--release 17`, đóng gói Fat JAR kèm Gson, chạy bộ kiểm tra với `-ea`, và **dừng ngay nếu kiểm tra thất bại**. Bỏ `-ea` thì mọi `assert` bị JVM bỏ qua và một lượt build xanh không chứng minh gì.
+1. Open Burp Suite.
+2. Go to `Extensions` and open the `Installed` tab.
+3. Click `Add`, set `Extension type` to `Java`.
+4. Set `Extension file` to `build\libs\burp-screenshot-poc.jar`.
+5. Click `Next`, then `Close`.
 
-Kết quả:
-
-```
-build\libs\burp-screenshot-poc.jar      # nạp vào Burp
-build\test_poc_dark.png                 # ảnh render thử, nền tối
-build\test_poc_light.png                # ảnh render thử, nền sáng
-build\test_studio_merged.png            # toàn bộ workspace gộp, nền tối
-build\test_studio_merged_light.png      # toàn bộ workspace gộp, nền sáng
-build\palette_dark.png                  # bảng màu tham chiếu
-build\palette_light.png
-```
-
-Hai ảnh `test_studio_merged*` là ảnh chụp cả cửa sổ, dùng để bắt lỗi bố cục và lỗi panel không
-theo theme. Test quét từng pixel ngoài vùng card và fail nếu tìm thấy màu panel của look and feel,
-nên một panel thiếu `getBackground()` sẽ làm build đỏ chứ không lọt ra bản phát hành.
-
-Bản sao của các ảnh render nằm trong `reference/after/`, cạnh ảnh gốc và ảnh bản cũ để so.
+After a rebuild, use `Reload` in the `Installed` tab. No Burp restart is needed.
 
 ---
 
-## Ghi chú
+## Usage
 
-- `burp-screenshot-poc.jar` ở thư mục gốc là bản build cũ, không phải bản script tạo ra. Nạp nhầm file này sẽ chạy code cũ. Bản đúng luôn nằm trong `build\libs\`.
-- `lib\rsyntaxtextarea-3.4.0.jar` không còn được dùng từ bản refactor này. Giữ lại cũng không ảnh hưởng gì, xóa cũng được.
-- `build.gradle` và `settings.gradle` vẫn còn trong project nhưng chưa được kiểm chứng: máy này không cài Gradle và project không có `gradlew`. Đường build chính thức là `build.ps1` và `build.bat`.
+1. Open the request in Repeater, Logger or Proxy.
+2. Open the `ScreenshotPoC` tab on the response side. The `Date` header is highlighted already
+   and the browser noise headers are hidden.
+3. Select a token that must not reach the report, right-click, and choose `Blur` or `Hide`.
+4. To drop lines, drag over their numbers in the gutter, right-click, and choose
+   `Remove lines 17-24 from the PoC`.
+5. Capture the text area with any screen capture tool and paste it into the report.
+
+The extension takes no part in step 5. There is no export button and no image clipboard.
+
+**Settings.** The palette icon at the right of the strip above the text opens
+`Screenshot PoC view settings`, with two tabs. `Headers` holds the hidden header list, its
+scope, and the two `Remove lines` fields. `Rules` holds every highlight and redaction rule,
+each editable on its own card, with a preset picker. Changes appear behind the dialog as they
+are made, debounced by 250 ms.
+
+**Header list syntax.** `X-Internal-*` hides by prefix. `!Set-Cookie` always shows and wins over
+every other entry. `Server` hides exactly that header, case-insensitively. The first line of the
+message is never filtered.
+
+**Configuration** lives in `~\.burp_poc_text_view.json`. Delete it to return to the shipped
+defaults. A file from an older build is migrated on load: missing shipped rules come back, and a
+rule deleted on purpose stays deleted.
+
+**Blur is not a security boundary.** The characters stay selectable and copyable, because
+whoever takes the screenshot already has the value in Repeater. The blur is there so the image
+pasted into a report does not carry the token. To truly remove a value, delete the header in
+Repeater.
+
+---
+
+## CI/CD
+
+No CI is configured. The build is local, and its exit status is the gate.
+
+---
+
+## Testing
+
+`ScreenshotVerificationTest` is a plain `main` class with 33 checks. `build.ps1` runs it with
+`-ea` and fails the build on the first failed assertion. It covers the tab scope, header hiding,
+line ranges and their bad inputs, the Date rule and its migration, rule matching, undo, search,
+wrap at long unbroken tokens, the gutter menu, and the marks following the viewport on a 2,000
+line message.
+
+Several checks measure pixels, not just state. The suite writes captures into `build\` and
+asserts on them:
+
+- The blur region is compared against a control image with no rule: the glyph strokes must lose
+  most of their contrast, and the region must not be flat. This rejects both a blur that hides
+  nothing and a blur that hides the shape as well.
+- The last character of a value must be as blurred as the rest of it, in both directions. This
+  is the check for the off-by-one that leaves a character showing at the right edge.
+- The highlight region must keep glyph pixels, so a highlight cannot swallow the text it marks.
+- The wrap checks count characters drawn outside the inner edge of the pane and require zero.
+
+---
+
+## Contributing
+
+- `.\build.ps1` must pass. It is the only gate.
+- Add a check for a bug fix. Every check is an `assert` in the same `main` class.
+- Resolve colours at paint time, never in a constructor, or a theme switch leaves the view in
+  the old theme.
+- Never call `UIManager.put` or `updateComponentTreeUI`. The extension shares Burp's JVM, so a
+  global change reaches every other extension and Burp itself.
+- `engine/` must not import `ui/`.
+
+---
+
+## Author
+
+[@Ginnz1337](https://github.com/Ginnz1337)
+
+---
+
+## License
+
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+Copyright (C) 2026 Ginnz1337
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+The assembled JAR bundles Gson 2.10.1, which is licensed under Apache-2.0 and is compatible with
+GPL-3.0. Its license text is in [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt).
+
+The Montoya API is not bundled and not redistributed here. It is covered by the Burp Suite
+Professional licence, so the build downloads it from Maven Central to compile against it, and Burp
+provides it at runtime.
+
+---
+
+This extension draws messages that are already in your Burp Suite session. It sends no traffic,
+contacts no server, and writes nothing except its own settings file. Use it only against systems
+you are authorised to test.
