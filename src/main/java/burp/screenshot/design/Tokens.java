@@ -26,7 +26,6 @@ public final class Tokens {
 
     public static final int R_SM = 4;
     public static final int R_MD = 6;
-    public static final int R_LG = 10;
 
     // ---------------------------------------------------------------- fonts
 
@@ -56,11 +55,6 @@ public final class Tokens {
     public static Font monoItalic(int size) { return new Font(MONO_FAMILY, Font.ITALIC, size); }
     public static Font sans(int size) { return new Font(UI_FAMILY, Font.PLAIN, size); }
     public static Font sansBold(int size) { return new Font(UI_FAMILY, Font.BOLD, size); }
-
-    /** True when the monospaced family resolved to a real fixed-width font. */
-    public static boolean isMonospaced(Font f) {
-        return f != null && "monospaced".equalsIgnoreCase(f.getFamily());
-    }
 
     // ---------------------------------------------------------------- colors
 
@@ -201,12 +195,6 @@ public final class Tokens {
 
     public static String toHex(Color c) {
         return String.format("#%02x%02x%02x", c.getRed(), c.getGreen(), c.getBlue());
-    }
-
-    /** Picks black or white, whichever reads better on the given background. */
-    public static Color readableOn(Color bg) {
-        double lum = (bg.getRed() * 299 + bg.getGreen() * 587 + bg.getBlue() * 114) / 1000.0;
-        return lum > 140 ? new Color(0x1f2328) : Color.WHITE;
     }
 
     private static final class Builder {

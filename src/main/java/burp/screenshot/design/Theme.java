@@ -64,14 +64,6 @@ public final class Theme {
     public static Tokens tokens() { return dark ? Tokens.DARK : Tokens.LIGHT; }
 
     /**
-     * Tokens for an explicit mode, ignoring the current global state.
-     *
-     * <p>The renderer uses this so a single run can export a dark and a light image without
-     * mutating global state, and so tests are order-independent.
-     */
-    public static Tokens tokensFor(boolean darkMode) { return darkMode ? Tokens.DARK : Tokens.LIGHT; }
-
-    /**
      * Registers a re-theme callback. The returned handle removes it, so a window that
      * registers on open and closes on dispose cannot leak into the static list.
      */

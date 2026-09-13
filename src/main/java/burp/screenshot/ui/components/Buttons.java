@@ -28,7 +28,6 @@ public final class Buttons {
 
     public static JButton primary(String text, Icon icon) { return new FlatButton(text, icon, Kind.PRIMARY); }
     public static JButton secondary(String text, Icon icon) { return new FlatButton(text, icon, Kind.SECONDARY); }
-    public static JButton ghost(String text, Icon icon) { return new FlatButton(text, icon, Kind.GHOST); }
     public static JButton danger(String text, Icon icon) { return new FlatButton(text, icon, Kind.DANGER); }
 
     /**

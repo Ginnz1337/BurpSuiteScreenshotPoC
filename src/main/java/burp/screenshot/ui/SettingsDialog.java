@@ -30,8 +30,9 @@ import java.awt.Window;
  * same question the header list answers, so they sit under it. A third held the syntax colors
  * and a fourth the hidden lines; the colors went because nothing but this dialog ever set them,
  * the rules already carry a color per highlight, and a tab nobody opens costs a click from
- * everyone else. {@link SyntaxColorEditor} is left in the tree, unreferenced, so the palette can
- * come back as a tab without being rewritten.
+ * everyone else. The color editor that tab was built on is gone with it. It was kept for a while
+ * as unreferenced code a later tab could reuse, and a class nothing constructs is a class nothing
+ * keeps working.
  *
  * <p>A dialog rather than a side panel. The side panel belonged to the studio window, and the
  * tab now lives inside Repeater, where a permanently open inspector would take width from the

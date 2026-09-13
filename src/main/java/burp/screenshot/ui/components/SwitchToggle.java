@@ -46,8 +46,6 @@ public class SwitchToggle extends JComponent {
         });
     }
 
-    public boolean isSelected() { return selected; }
-
     public void setSelected(boolean value) {
         setSelected(value, false);
     }

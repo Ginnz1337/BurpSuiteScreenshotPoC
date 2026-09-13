@@ -60,11 +60,6 @@ public final class Rules {
             return request ? target.appliesToRequest() : target.appliesToResponse();
         }
 
-        /** True for a redaction, false for a highlight. */
-        public boolean isRedaction() {
-            return redaction;
-        }
-
         /** True when this rule takes its match out of the message instead of painting over it. */
         public boolean isHide() {
             return redaction && hide;
@@ -150,9 +145,6 @@ public final class Rules {
             return out;
         }
 
-        public boolean isEmpty() {
-            return highlights.isEmpty() && redactions.isEmpty();
-        }
     }
 
     private Rules() {}

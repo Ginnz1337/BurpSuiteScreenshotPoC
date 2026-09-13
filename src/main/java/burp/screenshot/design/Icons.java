@@ -54,29 +54,6 @@ public final class Icons {
 
     // ------------------------------------------------------------------ shapes
 
-    public static Icon camera(Color color, int size) {
-        return new Base(color, size) {
-            @Override public void paintIcon(Component c, Graphics g, int x, int y) {
-                Graphics2D g2 = prepare(c, g, x, y);
-                int s = size;
-                Path2D body = new Path2D.Float();
-                body.moveTo(1, s / 4);
-                body.lineTo(s / 4, s / 4);
-                body.lineTo(s / 3, 1);
-                body.lineTo(s * 2 / 3, 1);
-                body.lineTo(s * 3 / 4, s / 4);
-                body.lineTo(s - 1, s / 4);
-                body.lineTo(s - 1, s - 1);
-                body.lineTo(1, s - 1);
-                body.closePath();
-                stroke(g2, Math.max(1.2f, s / 12f));
-                g2.draw(body);
-                g2.fillOval(s / 4, s * 5 / 12, s / 2, s / 2);
-                g2.dispose();
-            }
-        };
-    }
-
     public static Icon save(Color color, int size) {
         return new Base(color, size) {
             @Override public void paintIcon(Component c, Graphics g, int x, int y) {
@@ -208,53 +185,6 @@ public final class Icons {
                 int p = s / 4;
                 g2.drawLine(p, p, s - p, s - p);
                 g2.drawLine(s - p, p, p, s - p);
-                g2.dispose();
-            }
-        };
-    }
-
-    public static Icon search(Color color, int size) {
-        return new Base(color, size) {
-            @Override public void paintIcon(Component c, Graphics g, int x, int y) {
-                Graphics2D g2 = prepare(c, g, x, y);
-                stroke(g2, 1.5f);
-                int s = size;
-                int d = s * 3 / 5;
-                g2.drawOval(1, 1, d, d);
-                g2.drawLine(1 + d * 3 / 4, 1 + d * 3 / 4, s - 2, s - 2);
-                g2.dispose();
-            }
-        };
-    }
-
-    public static Icon zoomIn(Color color, int size) { return zoom(color, size, true); }
-    public static Icon zoomOut(Color color, int size) { return zoom(color, size, false); }
-
-    private static Icon zoom(Color color, int size, boolean plus) {
-        return new Base(color, size) {
-            @Override public void paintIcon(Component c, Graphics g, int x, int y) {
-                Graphics2D g2 = prepare(c, g, x, y);
-                stroke(g2, 1.5f);
-                int s = size;
-                int d = s * 3 / 5;
-                g2.drawOval(1, 1, d, d);
-                g2.drawLine(1 + d * 3 / 4, 1 + d * 3 / 4, s - 2, s - 2);
-                g2.drawLine(1 + d / 4, 1 + d / 2, 1 + d * 3 / 4, 1 + d / 2);
-                if (plus) g2.drawLine(1 + d / 2, 1 + d / 4, 1 + d / 2, 1 + d * 3 / 4);
-                g2.dispose();
-            }
-        };
-    }
-
-    public static Icon fit(Color color, int size) {
-        return new Base(color, size) {
-            @Override public void paintIcon(Component c, Graphics g, int x, int y) {
-                Graphics2D g2 = prepare(c, g, x, y);
-                stroke(g2, 1.5f);
-                int s = size;
-                g2.drawRect(1, 1, s - 3, s - 3);
-                g2.drawLine(s / 3, s / 3, s * 2 / 3, s * 2 / 3);
-                g2.drawLine(s * 2 / 3, s / 3, s / 3, s * 2 / 3);
                 g2.dispose();
             }
         };

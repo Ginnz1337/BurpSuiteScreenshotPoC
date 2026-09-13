@@ -1971,6 +1971,11 @@ public class ScreenshotVerificationTest {
     private static final int VIEW_WIDTH = 900;
     private static final int VIEW_HEIGHT = 320;
 
+    /** How far down the tall message the value worth hiding sits. */
+    private static final int DEEP_LINE = 1500;
+    private static final int DEEP_LINES = 2000;
+    private static final String DEEP_VALUE = "deepsecretvalue";
+
     /** Narrow enough that the long request line cannot fit on one row. */
     private static final int NARROW_WIDTH = 380;
 
@@ -2007,6 +2012,7 @@ public class ScreenshotVerificationTest {
         checkHighlightKeepsGlyphs(dark);
         checkBlurHidesTheValue(dark);
         checkRedactionCoversLastGlyph(dark);
+        checkMarksFollowTheViewport();
         checkWrap();
         checkWrapCoversEveryCharacter();
 
@@ -2151,6 +2157,113 @@ public class ScreenshotVerificationTest {
     }
 
     /**
+     * A rule has to reach a line the reader scrolled to, not only the lines that were on screen.
+     *
+     * <p>The rule pass covers the visible run of lines and a margin, because running every
+     * expression over every line of a long response is the whole cost of a rebuild on one. That
+     * is only sound if the pass follows the viewport, and this is the check that says it does: a
+     * value fifteen hundred lines down a two-thousand-line message, redacted and measured after
+     * scrolling to it, against a control of the same message scrolled the same way.
+     *
+     * <p>Without the scroll the value is off screen and this check would pass on a view that
+     * never marks anything below the fold, which is exactly the fault it exists to catch.
+     */
+    private static void checkMarksFollowTheViewport() throws Exception {
+        ViewFixture marked = deepFixture(true);
+        ViewFixture control = deepFixture(false);
+
+        // Laid out once before anything is scrolled, so the position below is in a coordinate
+        // system that exists.
+        paint(marked.view(), VIEW_WIDTH, VIEW_HEIGHT);
+        paint(control.view(), VIEW_WIDTH, VIEW_HEIGHT);
+
+        Rectangle below = rectFor(marked, DEEP_VALUE);
+        int shift = Math.max(0, below.y - 40);
+        assert shift > 0 : "the value must start below the fold, it is already at " + below;
+
+        place(marked, shift);
+        place(control, shift);
+
+        BufferedImage shot = paint(marked.view(), VIEW_WIDTH, VIEW_HEIGHT);
+        BufferedImage plain = paint(control.view(), VIEW_WIDTH, VIEW_HEIGHT);
+
+        Rectangle window = rectFor(marked, DEEP_VALUE);
+        assert window.y >= 0 && window.y + window.height <= VIEW_HEIGHT
+                : "the value must be inside the painted box for this to mean anything, it is at "
+                + window + " of a " + VIEW_HEIGHT + " pixel box scrolled " + shift + " down";
+
+        // The deep line is a form field in a body, so its value is drawn in the form value's
+        // colour rather than a header value's. The measurement is otherwise the same one.
+        Contrast contrast = strokeContrast(shot, plain, inset(window, 2),
+                paletteColor(TokenType.FORM_VALUE));
+        assert contrast.strokes() > 20
+                : "the control must draw " + DEEP_VALUE + " as strokes in " + window.width + "x"
+                + window.height + ", it has " + contrast.strokes()
+;
+        assert contrast.control() > 60
+                : "in the control the strokes must stand out, they measure "
+                + round(contrast.control());
+        assert contrast.marked() < READABLE_FRACTION * contrast.control()
+                : "a rule must still cover a line the reader scrolled to, the value measures "
+                + round(contrast.marked()) + " against " + round(contrast.control()) + " unredacted";
+
+        System.out.println("[PASS] marks follow the viewport: " + DEEP_VALUE + " at line "
+                + DEEP_LINE + " is redacted after scrolling " + shift
+                + "px down, its strokes measure " + round(contrast.marked()) + " against "
+                + round(contrast.control()) + " unredacted");
+    }
+
+    /** Scrolls the view to a y and refuses to carry on if it did not go there. */
+    private static void place(ViewFixture fixture, int y) {
+        JScrollPane scroll = scrollPaneOf(fixture.pane());
+        assert scroll != null : "the view must hold the text pane in a scroll pane";
+        scroll.getViewport().setViewPosition(new Point(0, y));
+        int at = scroll.getViewport().getViewPosition().y;
+        assert at == y : "the view must really be scrolled to " + y + " before this means "
+                + "anything, it sits at " + at;
+    }
+
+    /**
+     * A message long enough to scroll, with one value worth hiding well below the first screen.
+     *
+     * <p>Long on purpose: a value that fits on the first screen is inside whatever window the
+     * rule pass happens to cover, so it proves nothing about following the viewport.
+     */
+    private static ViewFixture deepFixture(boolean withRedaction) {
+        StringBuilder raw = new StringBuilder("HTTP/1.1 200 OK\r\n\r\n");
+        for (int i = 1; i <= DEEP_LINES; i++) {
+            if (i == DEEP_LINE) {
+                raw.append("token=").append(DEEP_VALUE).append("\r\n");
+            } else {
+                raw.append("body line ").append(i).append(" of the message\r\n");
+            }
+        }
+
+        TemplateConfig config = new TemplateConfig();
+        config.setHeadersToHide("");
+        config.getRedactions().clear();
+        if (withRedaction) {
+            config.getRedactions().add(new RedactionRule(DEEP_VALUE, false,
+                    ScopeTarget.RESPONSE, 0));
+        }
+
+        HttpExchangeData data = new HttpExchangeData();
+        data.setRawResponse(raw.toString());
+
+        StyledMessageView view = new StyledMessageView(false);
+        // Painted while empty, and before the message arrives. A view that has never been laid
+        // out has no viewport to ask which lines are on screen, and the rule pass falls back to
+        // the whole message when it cannot tell, which would leave this check passing on a view
+        // whose marks never move.
+        paint(view, VIEW_WIDTH, VIEW_HEIGHT);
+        view.updateData(data, config);
+
+        JTextPane pane = findPane(view);
+        assert pane != null : "the view must hold a text pane";
+        return new ViewFixture(view, pane, documentText(pane));
+    }
+
+    /**
      * The last character of a redacted value has to be covered.
      *
      * <p>Checked on the final character's own cell, because that is the cell that used to be
@@ -2207,7 +2320,18 @@ public class ScreenshotVerificationTest {
      * is left of it.
      */
     private static Contrast strokeContrast(BufferedImage marked, BufferedImage control, Rectangle rect) {
-        Color glyph = paletteColor(TokenType.HEADER_VALUE);
+        return strokeContrast(marked, control, rect, paletteColor(TokenType.HEADER_VALUE));
+    }
+
+    /**
+     * The same measurement over text that is not a header value.
+     *
+     * <p>The stroke pixel is found by its colour in the control, and a body line is drawn in the
+     * body colour rather than the header value's. Everything else is identical, so a body region
+     * and a header region are still measured the same way.
+     */
+    private static Contrast strokeContrast(BufferedImage marked, BufferedImage control,
+                                           Rectangle rect, Color glyph) {
         int strokes = 0;
         double controlSum = 0;
         double markedSum = 0;

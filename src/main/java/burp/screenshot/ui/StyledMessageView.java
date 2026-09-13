@@ -29,6 +29,7 @@ import javax.swing.event.DocumentListener;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.DefaultCaret;
 import javax.swing.text.DefaultHighlighter;
+import javax.swing.text.DefaultStyledDocument;
 import javax.swing.text.Element;
 import javax.swing.text.Highlighter;
 import javax.swing.text.ParagraphView;
@@ -57,6 +58,7 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseMotionAdapter;
 import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -121,6 +123,15 @@ public class StyledMessageView extends JPanel {
      */
     private static final int NOISE_CELL = 3;
 
+    /**
+     * Rows above and below the visible ones that the rule pass also covers.
+     *
+     * <p>A margin, not the whole message. It is what keeps a scrollbar drag from rebuilding the
+     * ranges on every pixel of travel, and it is small enough that the pass stays a fraction of a
+     * millisecond on any message worth scrolling.
+     */
+    private static final int MARK_MARGIN = 24;
+
     /** Which half of the exchange is on screen. Fixed for the life of the instance. */
     private final boolean isRequest;
 
@@ -169,6 +180,65 @@ public class StyledMessageView extends JPanel {
     /** Compiled once per rebuild, already filtered to this side of the exchange. */
     private Rules.Result rules = Rules.Result.empty();
 
+    /**
+     * The two halves of {@link #rules} the per-line loop walks.
+     *
+     * <p>Held rather than asked for on each line. {@code rules.blurred()} builds a new list every
+     * time it is called, and the loop calls it once per line, so a long message paid for tens of
+     * thousands of lists that all said the same thing.
+     */
+    private List<Rules.Rule> blurredRules = List.of();
+    private List<Rules.Rule> highlightRules = List.of();
+
+    /**
+     * Everything the document text and its colors are built from.
+     *
+     * <p>The message is deliberately not part of it. Folding a megabyte of body into a string
+     * that is compared on every debounced keystroke would cost more than the rebuild the
+     * comparison exists to avoid, so the message is compared where it arrives instead.
+     */
+    private String textKey = "";
+
+    /**
+     * One entry per line of the document as built.
+     *
+     * <p>Kept so a rule can be run again without rebuilding the text. A rule decides which ranges
+     * are painted over and nothing else, so changing one does not have to retokenize the message.
+     */
+    private final List<LineRef> lineRefs = new ArrayList<>();
+
+    /**
+     * The run of {@link #lineRefs} the two lists above were built from, and whether they are
+     * still valid for it.
+     *
+     * <p>The rule pass covers the lines on screen rather than the whole message, so the ranges
+     * have to be rebuilt when the viewport moves. Without the bounds there is nothing to compare
+     * a scroll against and every scroll event would redo the pass.
+     */
+    private int marksFrom = -1;
+    private int marksTo = -1;
+    private boolean marksStale = true;
+
+    /**
+     * Attribute sets, one per token type.
+     *
+     * <p>A long body is a few hundred thousand tokens, and every one of them used to be handed a
+     * freshly built set of four attributes. The set depends on the token type and the palette and
+     * on nothing else, so there are as many of them as there are types.
+     */
+    private final Map<TokenType, SimpleAttributeSet> styles = new EnumMap<>(TokenType.class);
+
+    /**
+     * The palette of the current rebuild.
+     *
+     * <p>Held because resolving it copies a map, and the gutter asked for it on every repaint and
+     * once per selected row.
+     */
+    private SyntaxPalette palette = SyntaxPalette.DARK;
+
+    /** The pane's metrics, which cost a toolkit lookup on every call. Null until first asked. */
+    private FontMetrics paneMetrics;
+
     private boolean wrap = true;
 
     /** Header lines the current settings removed, shown in the host's status label. */
@@ -216,6 +286,9 @@ public class StyledMessageView extends JPanel {
         scroll.setOpaque(false);
         scroll.getViewport().setOpaque(false);
         scroll.setRowHeaderView(gutter);
+        // The painted ranges cover the lines on screen, so a scroll has to build the ones that
+        // just arrived. The call is a no-op when the run of lines is the one already covered.
+        scroll.getViewport().addChangeListener(e -> refreshMarks());
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         SlimScrollBarUI.install(scroll);
 
@@ -267,7 +340,7 @@ public class StyledMessageView extends JPanel {
         boolean sameMessage = sameMessage(data, this.exchangeData);
         this.exchangeData = data;
         this.config = templateConfig;
-        rebuild(!sameMessage);
+        rebuild(!sameMessage, !sameMessage);
     }
 
     private static boolean sameMessage(HttpExchangeData a, HttpExchangeData b) {
@@ -394,58 +467,52 @@ public class StyledMessageView extends JPanel {
     public Color getBackground() { return Theme.tokens().bgPanel; }
 
     /** Rebuilt by the host when the panel is first shown, to pick up a late theme change. */
-    public void refreshTheme() { rebuild(false); }
+    public void refreshTheme() { rebuild(false, false); }
 
     // ------------------------------------------------------------------ build
 
     /**
-     * Rebuilds the document.
+     * Rebuilds the view.
      *
-     * @param resetToTop true when the message itself changed, false when only the settings did.
-     *                   In the second case the reader is put back where they were: the rebuild
-     *                   clears the document, and clearing it drops the caret to the top and takes
-     *                   the viewport with it. Adding a highlight or removing a line is a change
-     *                   to what is drawn, not to where the user is looking.
+     * <p>Two jobs that used to be one. The text is tokenized and inserted, and the rules are run
+     * over the lines that came out. Only the first is expensive, and a rule the user is still
+     * typing changes none of it, so the text is built only when something that shapes it moved.
+     * What is left is a walk over lines already in hand, which is what makes the settings dialog
+     * usable on a long message.
+     *
+     * @param resetToTop     true when the message itself changed, false when only the settings
+     *                       did. In the second case the reader is put back where they were: the
+     *                       rebuild clears the document, and clearing it drops the caret to the
+     *                       top and takes the viewport with it. Adding a highlight or removing a
+     *                       line is a change to what is drawn, not to where the user is looking.
+     * @param messageChanged true when the message is not the one the document was built from.
      */
-    private void rebuild(boolean resetToTop) {
+    private void rebuild(boolean resetToTop, boolean messageChanged) {
         int caretBefore = pane.getCaretPosition();
         int topBefore = topVisibleOffset();
 
-        StyledDocument doc = pane.getStyledDocument();
-        lineNumbers.clear();
-        spans.clear();
-        headerNames.clear();
-        highlights.clear();
-        redactions.clear();
-        pane.getHighlighter().removeAllHighlights();
-
-        try {
-            doc.remove(0, doc.getLength());
-        } catch (BadLocationException ignored) {
-            // An empty document cannot throw, and a failed clear is recoverable by the insert.
-        }
-
         Tokens t = Theme.tokens();
-        SyntaxPalette palette = effectivePalette();
-        pane.setBackground(t.bgCard);
+        palette = effectivePalette();
+        rules = config == null ? Rules.Result.empty() : Rules.compile(config).forSide(isRequest);
+        blurredRules = rules.blurred();
+        highlightRules = rules.highlights();
+        styles.clear();
+        paneMetrics = null;
+
+        String key = textKey();
+        if (messageChanged || !key.equals(textKey)) {
+            textKey = key;
+            buildDocument(t);
+        }
+        marksStale = true;
+        refreshMarks();
+
+        // Set only when they really differ. Each of these fires a property change and a
+        // revalidate, and this method now runs on every debounced keystroke in the dialog.
+        if (!t.bgCard.equals(pane.getBackground())) pane.setBackground(t.bgCard);
+        if (!t.code.equals(pane.getFont())) pane.setFont(t.code);
         pane.setSelectionColor(Tokens.alpha(t.accent, 110));
         pane.setSelectedTextColor(t.textPrimary);
-        pane.setFont(t.code);
-
-        if (exchangeData != null && config != null) {
-            String raw = isRequest ? exchangeData.getRawRequest() : exchangeData.getRawResponse();
-            TextProcessor.ProcessedHttp processed = isRequest
-                    ? TextProcessor.processRequest(raw, config)
-                    : TextProcessor.processResponse(raw, config);
-            rules = Rules.compile(config).forSide(isRequest);
-            appendLines(doc, processed, t, palette);
-            hiddenHeaderCount = countHiddenHeaders(raw, processed);
-            removedLineCount = processed.removedLineCount;
-        } else {
-            rules = Rules.Result.empty();
-            hiddenHeaderCount = 0;
-            removedLineCount = 0;
-        }
 
         if (lineNumbers.isEmpty()) lineNumbers.add(-1);
 
@@ -455,6 +522,142 @@ public class StyledMessageView extends JPanel {
         restoreView(resetToTop ? 0 : caretBefore, resetToTop ? 0 : topBefore);
         applySearch();
         pane.repaint();
+    }
+
+    /**
+     * The message and settings the document was built from, as one comparable string.
+     *
+     * <p>A hidden rule is in here and a blurred or highlighted one is not. Hidden rules are
+     * applied to a line before it is built, so they change what the text says; the other two only
+     * decide which ranges are painted over it afterwards.
+     */
+    private String textKey() {
+        if (config == null) return "";
+        StringBuilder key = new StringBuilder(256);
+        key.append(Theme.isDark()).append('|');
+        key.append(Tokens.MONO_FAMILY).append('|').append(Theme.tokens().code.getSize()).append('|');
+        key.append(config.getHeaderScope()).append('|');
+        key.append(config.getHeadersToHide()).append('|');
+        key.append(config.getRequestLineRanges()).append('|');
+        key.append(config.getResponseLineRanges()).append('|');
+        key.append(config.getSyntaxColors()).append('|');
+        // Separated, so two patterns that run together cannot spell a third one.
+        for (Rules.Rule rule : rules.hidden()) key.append(rule.source).append('\u0001');
+        return key.toString();
+    }
+
+    /**
+     * Tokenizes the message and hands the pane a finished document.
+     *
+     * <p>Built away from the pane and set in one call. An insert into a document a
+     * {@code JTextPane} is already displaying costs three times what the same insert costs into
+     * one that is not, because every one of them notifies the caret, which repaints. A long body
+     * is a few hundred thousand inserts, so that difference is most of the rebuild.
+     */
+    private void buildDocument(Tokens t) {
+        lineNumbers.clear();
+        spans.clear();
+        headerNames.clear();
+        lineRefs.clear();
+        pane.getHighlighter().removeAllHighlights();
+
+        StyledDocument doc = new DefaultStyledDocument();
+        if (exchangeData != null && config != null) {
+            String raw = isRequest ? exchangeData.getRawRequest() : exchangeData.getRawResponse();
+            TextProcessor.ProcessedHttp processed = isRequest
+                    ? TextProcessor.processRequest(raw, config)
+                    : TextProcessor.processResponse(raw, config);
+            appendLines(doc, processed, t, palette);
+            hiddenHeaderCount = countHiddenHeaders(raw, processed);
+            removedLineCount = processed.removedLineCount;
+        } else {
+            hiddenHeaderCount = 0;
+            removedLineCount = 0;
+        }
+
+        pane.setDocument(doc);
+    }
+
+    /**
+     * Builds the painted ranges for the lines on screen, and no others.
+     *
+     * <p>A rule is a regular expression the user wrote, and running every one of them over every
+     * line of a long response costs tens of milliseconds. Nobody reads the lines that are scrolled
+     * out of sight, so the pass covers the visible run plus a margin, and the viewport listener
+     * rebuilds it when the run changes. The margin is what keeps a slow drag from rebuilding on
+     * every pixel of travel.
+     *
+     * <p>Exact per line, not per offset: a match never crosses a line, because the rules are run
+     * one line at a time, so a line wholly outside the window has nothing to contribute to it.
+     *
+     * <p>The window is found from the offset at the top of the viewport and the height of the
+     * viewport, not from the offset at its bottom. An offset past the end of the laid-out text
+     * comes back as the end of the document, and a pane that has just been handed a new document
+     * is in exactly that state until it is first painted, so asking for the bottom of the window
+     * would quietly return the last line of a ten-thousand-line message and make the pass cover
+     * all of it. The top is honest in every one of those states.
+     *
+     * <p>Falls back to the whole message when even the top cannot be trusted. Conservatively
+     * wrong is the safe direction: the fallback costs exactly what the pass used to cost.
+     */
+    private void refreshMarks() {
+        int count = lineRefs.size();
+        int from = 0;
+        int to = count - 1;
+
+        Rectangle visible = scroll.getViewport().getViewRect();
+        if (visible.height > 0 && count > 0) {
+            int length = pane.getDocument().getLength();
+            int top = offsetAt(visible.y);
+            // A viewport taller than the text, or one that has not been laid out, answers with
+            // the end of the document. Both are cases the full pass handles and neither is long.
+            if (top >= 0 && top < length) {
+                int first = pane.getDocument().getDefaultRootElement().getElementIndex(top);
+                from = Math.max(0, first - MARK_MARGIN);
+                // At most one line per row of the viewport, so this covers every line that can
+                // be on screen even when the wrap makes a line take several rows.
+                int room = visible.height / Math.max(1, rowHeight()) + 1 + MARK_MARGIN;
+                to = Math.min(count - 1, first + room);
+            }
+        }
+
+        if (!marksStale && from == marksFrom && to == marksTo) return;
+        marksStale = false;
+        marksFrom = from;
+        marksTo = to;
+
+        highlights.clear();
+        redactions.clear();
+        if (blurredRules.isEmpty() && highlightRules.isEmpty()) {
+            paintMarks();
+            return;
+        }
+        for (int i = from; i <= to; i++) {
+            LineRef ref = lineRefs.get(i);
+            applyRules(ref.start(), ref.text(), ref.kind());
+        }
+        paintMarks();
+    }
+
+    /** The model offset at a y in the pane, or -1 when the pane cannot answer for it. */
+    private int offsetAt(int y) {
+        try {
+            return pane.viewToModel2D(new Point(0, y));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /**
+     * One row of the message, in pixels.
+     *
+     * <p>The font's own height, which is a lower bound on the real row: the paragraph view adds
+     * nothing above it here. A lower bound is the safe direction for its one caller, which
+     * divides the viewport by it to decide how many lines can be on screen.
+     */
+    private int rowHeight() {
+        if (paneMetrics == null) paneMetrics = pane.getFontMetrics(pane.getFont());
+        return Math.max(1, paneMetrics.getHeight());
     }
 
     /** The model offset of the topmost row on screen, or 0 when nothing is on screen yet. */
@@ -530,7 +733,7 @@ public class StyledMessageView extends JPanel {
                 }
             }
 
-            applyRules(lineStart, line, kind);
+            lineRefs.add(new LineRef(lineStart, line, kind));
             lineIndex++;
         }
     }
@@ -543,18 +746,17 @@ public class StyledMessageView extends JPanel {
      * That holds however the line is later wrapped, because wrapping never changes offsets.
      */
     private void applyRules(int lineStart, String line, SyntaxHighlighter.LineKind kind) {
-        if (rules.isEmpty() || line.isEmpty()) return;
-        if (kind == SyntaxHighlighter.LineKind.OMISSION) return;
+        if (line.isEmpty() || kind == SyntaxHighlighter.LineKind.OMISSION) return;
 
         int limit = line.length();
         // Only the blurred rules paint. A hidden rule's text was replaced by a marker before the
         // line was built, so there is nothing left of it here to paint over.
-        for (Rules.Rule rule : rules.blurred()) {
+        for (Rules.Rule rule : blurredRules) {
             rule.find(line, (start, end) -> redactions.add(new Redaction(
                     lineStart + clamp(start, limit),
                     lineStart + clamp(end, limit))));
         }
-        for (Rules.Rule rule : rules.highlights()) {
+        for (Rules.Rule rule : highlightRules) {
             rule.find(line, (start, end) -> highlights.add(new Highlight(
                     lineStart + clamp(start, limit),
                     lineStart + clamp(end, limit),
@@ -632,12 +834,25 @@ public class StyledMessageView extends JPanel {
         return styleFor(TokenType.TEXT, t, palette);
     }
 
+    /**
+     * The attributes of one token type, built once per rebuild.
+     *
+     * <p>Every token of a message used to get a set of its own, four attribute writes and an
+     * allocation each, for a few hundred thousand tokens. The set depends on the token type and
+     * the palette and on nothing else, so it is the same object for every token that wears it.
+     * The cache is dropped at the start of each rebuild, which is what lets a palette change
+     * reach the document.
+     */
     private SimpleAttributeSet styleFor(TokenType type, Tokens t, SyntaxPalette palette) {
+        SimpleAttributeSet cached = styles.get(type);
+        if (cached != null) return cached;
+
         SimpleAttributeSet a = new SimpleAttributeSet();
         StyleConstants.setFontFamily(a, Tokens.MONO_FAMILY);
         StyleConstants.setFontSize(a, t.code.getSize());
         StyleConstants.setBold(a, SyntaxPalette.isBold(type));
         StyleConstants.setForeground(a, palette.color(type));
+        styles.put(type, a);
         return a;
     }
 
@@ -809,7 +1024,9 @@ public class StyledMessageView extends JPanel {
     }
 
     private void afterRuleMenu() {
-        rebuild(false);
+        // The menu changed a rule, not the message. A rule the menu can add that does shape the
+        // text, a hidden redaction, is in the text key, so it rebuilds itself.
+        rebuild(false, false);
         if (onRulesChanged != null) onRulesChanged.run();
     }
 
@@ -877,6 +1094,14 @@ public class StyledMessageView extends JPanel {
 
     /** One token of the document. Offsets are document offsets, stable across wrapping. */
     private record Span(int start, int end, TokenType type, int lineIndex) { }
+
+    /**
+     * One line of the document as it was built.
+     *
+     * <p>What the rules need and the document cannot cheaply give back: the line's own text, its
+     * first offset, and which grammar it was tokenized under.
+     */
+    private record LineRef(int start, String text, SyntaxHighlighter.LineKind kind) { }
 
     private record Highlight(int start, int end, Color color) { }
 
@@ -955,6 +1180,11 @@ public class StyledMessageView extends JPanel {
 
         @Override
         public void paint(Graphics g) {
+            // Before the text, and here rather than only on a scroll: this is the one moment the
+            // layout is certainly up to date. Just after a document is set the pane is still the
+            // size of the old one, and the line under a given y is not the line that will be
+            // there once it is laid out. Cheap when nothing moved, which is the usual case.
+            refreshMarks();
             super.paint(g);
             if (redactions.isEmpty()) return;
 
@@ -1030,9 +1260,15 @@ public class StyledMessageView extends JPanel {
         return (int) Math.ceil(last.getX()) + charAdvance();
     }
 
-    /** One character of the pane's font, which is monospaced, so any character will do. */
+    /**
+     * One character of the pane's font, which is monospaced, so any character will do.
+     *
+     * <p>The metrics are held rather than asked for each time. Fetching them goes through the
+     * toolkit and builds an object, and a long message has a redaction on most of its lines.
+     */
     private int charAdvance() {
-        return Math.max(1, pane.getFontMetrics(pane.getFont()).charWidth('M'));
+        if (paneMetrics == null) paneMetrics = pane.getFontMetrics(pane.getFont());
+        return Math.max(1, paneMetrics.charWidth('M'));
     }
 
     private Rectangle2D rectAt(int offset) {
@@ -1361,7 +1597,7 @@ public class StyledMessageView extends JPanel {
             return MessageRuleMenu.buildForLines(
                     config, isRequest, numbers[0], numbers[1], () -> {
                 clearSelection();
-                rebuild(false);
+                rebuild(false, false);
                 if (onRulesChanged != null) onRulesChanged.run();
             });
         }
@@ -1386,7 +1622,10 @@ public class StyledMessageView extends JPanel {
             g2.fillRect(getWidth() - 1, 0, 1, getHeight());
 
             g2.setFont(font);
-            g2.setColor(effectivePalette().color(TokenType.LINE_NUMBER));
+            // Resolved once. This used to be asked for again after every selected row, and each
+            // answer copies the whole palette.
+            Color numberColor = palette.color(TokenType.LINE_NUMBER);
+            g2.setColor(numberColor);
 
             Element root = pane.getDocument().getDefaultRootElement();
             int count = Math.min(root.getElementCount(), lineNumbers.size());
@@ -1394,13 +1633,19 @@ public class StyledMessageView extends JPanel {
             int selectedFrom = anchorIndex < 0 ? -1 : Math.min(anchorIndex, focusIndex);
             int selectedTo = anchorIndex < 0 ? -1 : Math.max(anchorIndex, focusIndex);
 
-            for (int i = 0; i < count; i++) {
+            Rectangle clip = g.getClipBounds();
+            int from = firstRowIn(root, clip);
+
+            for (int i = from; i < count; i++) {
                 Integer number = lineNumbers.get(i);
                 if (number == null || number <= 0) continue;
 
                 Element line = root.getElement(i);
                 Rectangle2D r = rectAt(line.getStartOffset());
                 if (r == null) continue;
+
+                // Rows run down the component in order, so the first one past the bottom ends it.
+                if (clip != null && r.getMinY() > clip.getMaxY()) break;
 
                 if (i >= selectedFrom && i <= selectedTo) {
                     Rectangle2D next = i + 1 < root.getElementCount()
@@ -1412,7 +1657,7 @@ public class StyledMessageView extends JPanel {
                             : (int) Math.round(next.getY());
                     g2.setColor(selectionColor());
                     g2.fillRect(0, top, getWidth() - 1, Math.max(1, bottom - top));
-                    g2.setColor(effectivePalette().color(TokenType.LINE_NUMBER));
+                    g2.setColor(numberColor);
                 }
 
                 int baseline = (int) Math.round(r.getY() + metrics.getAscent());
@@ -1421,6 +1666,24 @@ public class StyledMessageView extends JPanel {
             }
 
             g2.dispose();
+        }
+
+        /**
+         * The first document line a paint has to consider.
+         *
+         * <p>The component is as tall as the whole message, so a reader scrolled to the bottom of
+         * a ten thousand line response was paying a {@code modelToView2D} for every line above
+         * them in order to draw the thirty in front of them, on every scroll. Asking the pane
+         * which character sits at the top of the clip is a lookup instead of a walk.
+         *
+         * <p>A conservative answer is safe: the caller still tests each row against the clip, so
+         * anything this returns too early costs time and nothing else.
+         */
+        private int firstRowIn(Element root, Rectangle clip) {
+            if (clip == null || clip.getMinY() <= 0) return 0;
+            int offset = pane.viewToModel2D(new Point(0, (int) clip.getMinY()));
+            if (offset < 0) return 0;
+            return Math.max(0, Math.min(root.getElementIndex(offset), root.getElementCount() - 1));
         }
     }
 }

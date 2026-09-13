@@ -1,7 +1,5 @@
 package burp.screenshot.model;
 
-import burp.screenshot.design.SyntaxPalette;
-
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -240,22 +238,6 @@ public class TemplateConfig {
 
     public void setSyntaxColors(Map<String, String> syntaxColors) {
         this.syntaxColors = syntaxColors != null ? new LinkedHashMap<>(syntaxColors) : new LinkedHashMap<>();
-    }
-
-    /** The stored overrides as a palette object, for the color editor. */
-    public SyntaxPalette getSyntaxPalette() {
-        SyntaxPalette p = SyntaxPalette.empty();
-        p.applyHexMap(getSyntaxColors());
-        return p;
-    }
-
-    /** Stores every entry of {@code p} as an override, making the template self-contained. */
-    public void setSyntaxPalette(SyntaxPalette p) {
-        setSyntaxColors(p != null ? p.toHexMap() : null);
-    }
-
-    public boolean hasSyntaxOverrides() {
-        return !getSyntaxColors().isEmpty();
     }
 
     /** Header names as they are stored, one per entry, blanks dropped. */

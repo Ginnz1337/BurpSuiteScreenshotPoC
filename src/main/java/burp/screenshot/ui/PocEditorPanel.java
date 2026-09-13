@@ -199,11 +199,6 @@ public class PocEditorPanel extends JPanel {
         drawPending();
     }
 
-    /** The message itself, for a caller that already holds it. */
-    public void setData(HttpExchangeData exchange) {
-        setSource(exchange, () -> exchange);
-    }
-
     /**
      * Reads the pending message and draws it. The only place the supplier is called.
      *

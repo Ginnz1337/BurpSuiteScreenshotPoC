@@ -11,10 +11,6 @@ public enum ScopeTarget {
         this.displayName = displayName;
     }
 
-    public String getDisplayName() {
-        return displayName;
-    }
-
     public boolean appliesToRequest() {
         return this == BOTH || this == REQUEST;
     }

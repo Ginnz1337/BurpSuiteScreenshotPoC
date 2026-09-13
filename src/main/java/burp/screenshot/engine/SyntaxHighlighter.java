@@ -33,42 +33,6 @@ public final class SyntaxHighlighter {
 
     private SyntaxHighlighter() {}
 
-    /**
-     * Kinds for a whole message, derived from position.
-     *
-     * <p>{@link TextProcessor} knows the kind of every line it kept, because it decided which to
-     * keep. Text the user has edited has no such map, so the structure is read back the same way
-     * the processor read it: first line is the start line, everything up to the first blank line
-     * is a header, everything after it is body.
-     *
-     * @param response true for a response, whose first line is a status line
-     * @return one kind per line, in order
-     */
-    public static List<LineKind> kindsFor(List<String> lines, boolean response) {
-        List<LineKind> kinds = new ArrayList<>(lines.size());
-
-        int firstBlank = lines.size();
-        for (int i = 1; i < lines.size(); i++) {
-            if (lines.get(i).trim().isEmpty()) {
-                firstBlank = i;
-                break;
-            }
-        }
-
-        for (int i = 0; i < lines.size(); i++) {
-            if (i == 0) {
-                kinds.add(response ? LineKind.STATUS_LINE : LineKind.REQUEST_LINE);
-            } else if (i < firstBlank) {
-                kinds.add(LineKind.HEADER);
-            } else if (i == firstBlank) {
-                kinds.add(LineKind.BLANK);
-            } else {
-                kinds.add(lines.get(i).trim().isEmpty() ? LineKind.BLANK : LineKind.BODY);
-            }
-        }
-        return kinds;
-    }
-
     // ------------------------------------------------------------------ dispatch
 
     public static List<Token> tokenize(String line, LineKind kind) {

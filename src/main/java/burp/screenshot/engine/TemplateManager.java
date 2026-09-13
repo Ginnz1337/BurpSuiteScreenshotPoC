@@ -231,11 +231,4 @@ public class TemplateManager {
         templates.put(clean.getName(), clean.copy());
         save();
     }
-
-    public synchronized void deleteTemplate(String name) {
-        if (!"Default".equalsIgnoreCase(name)) {
-            templates.remove(name);
-            save();
-        }
-    }
 }

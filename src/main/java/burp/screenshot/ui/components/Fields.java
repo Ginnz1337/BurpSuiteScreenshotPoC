@@ -10,7 +10,6 @@ import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JPanel;
-import javax.swing.JPasswordField;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
@@ -103,18 +102,6 @@ public final class Fields {
         if (placeholder != null && !placeholder.isBlank()) {
             f.setBorder(new PlaceholderBorder(placeholder));
         }
-        return f;
-    }
-
-    public static JPasswordField password() {
-        JPasswordField f = new JPasswordField() {
-            @Override public Color getBackground() { return Theme.tokens().bgInput; }
-            @Override public Color getForeground() { return Theme.tokens().textPrimary; }
-            @Override public Color getCaretColor() { return Theme.tokens().accent; }
-            @Override public Color getSelectionColor() { return Tokens.alpha(Theme.tokens().accent, 110); }
-        };
-        f.setEchoChar('•');
-        style(f);
         return f;
     }
 
@@ -352,16 +339,6 @@ public final class Fields {
         p.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(muted(label), BorderLayout.NORTH);
         p.add(control, BorderLayout.CENTER);
-        return p;
-    }
-
-    /** Label left, control right, used for compact numeric rows. */
-    public static JPanel inline(String label, JComponent control) {
-        JPanel p = new JPanel(new BorderLayout(Tokens.SM, 0));
-        p.setOpaque(false);
-        p.setAlignmentX(Component.LEFT_ALIGNMENT);
-        p.add(muted(label), BorderLayout.WEST);
-        p.add(control, BorderLayout.EAST);
         return p;
     }
 

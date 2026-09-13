@@ -81,9 +81,6 @@ public final class HeadersTab extends JPanel {
         add(buildControls(), BorderLayout.SOUTH);
     }
 
-    /** The header list as the user last saw it, for the host to persist. */
-    public String getHeaderText() { return headerArea.getText(); }
-
     // ------------------------------------------------------------------ controls
 
     private JComponent buildControls() {

@@ -10,7 +10,6 @@ import java.awt.Dimension;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
-import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -167,11 +166,5 @@ public class SegmentedControl<T> extends JComponent {
     public static <E extends Enum<E>> SegmentedControl<E> of(
             Class<E> type, Function<E, String> labeler, E selected, Consumer<E> onSelect) {
         return new SegmentedControl<>(List.of(type.getEnumConstants()), labeler, selected, onSelect);
-    }
-
-    /** Bounds of a segment, exposed for tests. */
-    public Rectangle segmentBounds(int index) {
-        int sw = segmentWidth();
-        return new Rectangle(2 + sw * index, 2, sw, Math.max(0, getHeight() - 4));
     }
 }
