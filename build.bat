@@ -83,7 +83,8 @@ if errorlevel 1 goto fail
 echo ==================================================
 echo  [SUCCESS] Built and verified
 echo  Output: %OUTJAR%
-echo  Preview images: build\test_poc_dark.png, build\test_poc_light.png
+echo  Captures: build\test_styled_dark.png, build\test_styled_light.png
+echo  Wrap captures: build\test_wrap_on.png, build\test_wrap_off.png
 echo  Palette reference: build\palette_dark.png, build\palette_light.png
 echo ==================================================
 exit /b 0

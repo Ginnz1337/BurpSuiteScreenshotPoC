@@ -31,11 +31,19 @@ public final class Buttons {
     public static JButton ghost(String text, Icon icon) { return new FlatButton(text, icon, Kind.GHOST); }
     public static JButton danger(String text, Icon icon) { return new FlatButton(text, icon, Kind.DANGER); }
 
-    /** Square button carrying only an icon. */
+    /**
+     * Square button carrying only an icon.
+     *
+     * <p>Shorter than a labelled button on purpose. A row of text beside a row of icons is as
+     * tall as the taller of the two, and an icon has no descender to leave room for: a 32-pixel
+     * button in a toolbar of 24-pixel fields is what makes a one-line strip three pixels taller
+     * than the text it sits above.
+     */
     public static JButton iconOnly(Icon icon, String tooltip) {
         FlatButton b = new FlatButton("", icon, Kind.GHOST);
         b.setToolTipText(tooltip);
-        b.setPadding(Tokens.SM, Tokens.SM);
+        b.setPadding(Tokens.SM, 0);
+        b.setMinHeight(24);
         return b;
     }
 
@@ -46,6 +54,7 @@ public final class Buttons {
         private boolean pressed;
         private int padX = Tokens.MD + 2;
         private int padY = Tokens.SM;
+        private int minHeight = 26;
 
         FlatButton(String text, Icon icon, Kind kind) {
             super(text);
@@ -79,11 +88,17 @@ public final class Buttons {
             revalidate();
         }
 
+        /** Floor for the height, before the vertical padding is added. */
+        void setMinHeight(int height) {
+            this.minHeight = height;
+            revalidate();
+        }
+
         @Override
         public Dimension getPreferredSize() {
             Dimension d = super.getPreferredSize();
             d.width += padX * 2;
-            d.height = Math.max(d.height, 26) + padY;
+            d.height = Math.max(d.height, minHeight) + padY;
             return d;
         }
 

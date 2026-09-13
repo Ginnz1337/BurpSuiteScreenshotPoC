@@ -14,11 +14,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 
+/**
+ * Persists the view settings between runs.
+ *
+ * <p>The file name changed when the extension stopped producing images. The old file holds
+ * card geometry that no longer exists, and reading it would only seed dead keys; a new name
+ * means the current defaults apply from the first launch rather than after a reset.
+ */
 public class TemplateManager {
 
-    private static final String CONFIG_FILE_NAME = ".burp_poc_screenshot_templates.json";
-    /** Matches {@code HighlightRule}'s own default, so a repaired rule looks untouched. */
-    private static final String DEFAULT_HIGHLIGHT = "#e5c07b";
+    private static final String CONFIG_FILE_NAME = ".burp_poc_text_view.json";
     private final Path configFilePath;
     private final Gson gson;
     private final Map<String, TemplateConfig> templates;
@@ -32,39 +37,10 @@ public class TemplateManager {
     }
 
     private void initDefaults() {
-        // 1. Default Template
-        TemplateConfig def = new TemplateConfig("Default");
+        // Normalized even though it was just built, so the file it is about to be written to
+        // carries the version and the next load has nothing to reconcile.
+        TemplateConfig def = normalize(new TemplateConfig("Default"));
         templates.put("Default", def);
-
-        // 2. Bug Bounty & Pentest Template
-        TemplateConfig bb = new TemplateConfig("Bug Bounty PoC");
-        bb.getRedactions().add(new RedactionRule(
-                "session_id=[^;\\s]+",
-                true,
-                ScopeTarget.BOTH,
-                RedactionMode.BLUR,
-                0
-        ));
-        bb.getRedactions().add(new RedactionRule(
-                "Bearer\\s+([a-zA-Z0-9_.-]+)",
-                true,
-                ScopeTarget.REQUEST,
-                RedactionMode.BLUR,
-                1
-        ));
-        bb.getHighlights().add(new HighlightRule(
-                "(?i)(union\\s+select|<script.*?>|alert\\(.*?\\)|SUPERADMIN|sec_live_[a-zA-Z0-9]+)",
-                true,
-                ScopeTarget.BOTH,
-                "#e5c07b"
-        ));
-        templates.put(bb.getName(), bb);
-
-        // 3. Minimal Card
-        TemplateConfig min = new TemplateConfig("Minimal");
-        min.setContentWidth("Compact (800px)");
-        min.setShowTimestamp(false);
-        templates.put(min.getName(), min);
     }
 
     public synchronized void load() {
@@ -82,7 +58,7 @@ public class TemplateManager {
                     }
                 }
             } catch (Exception e) {
-                System.err.println("[Screenshot PoC] Error reading templates: " + e.getMessage());
+                System.err.println("[PoC view] Error reading settings: " + e.getMessage());
             }
         }
 
@@ -101,7 +77,7 @@ public class TemplateManager {
                 gson.toJson(templates, writer);
             }
         } catch (Exception e) {
-            System.err.println("[Screenshot PoC] Error saving templates: " + e.getMessage());
+            System.err.println("[PoC view] Error saving settings: " + e.getMessage());
         }
     }
 
@@ -112,13 +88,15 @@ public class TemplateManager {
      *
      * <p>Gson omits null fields when it writes, so a null here means the JSON was written by an
      * older version or edited by hand. Every one of them is a latent crash: a null
-     * {@code highlights} list throws on the first {@code for} over it, a null {@code layoutMode}
-     * throws in the renderer's {@code ==} comparison, and a null {@code name} throws inside the
-     * combo box's {@code toString}. The defaults applied are the ones the constructor would have
-     * used, so a repaired template behaves like a fresh one.
+     * {@code highlights} list throws on the first {@code for} over it, and a null {@code name}
+     * throws inside a combo box's {@code toString}. The defaults applied are the ones the
+     * constructor would have used, so a repaired config behaves like a fresh one.
      *
-     * <p>Mutates and returns the same instance. The caller is normally the inspector's own live
-     * config, and repairing it in place is the point.
+     * <p>A field missing from the file altogether keeps the constructor's value, which is how a
+     * settings file written before the default {@code Date} highlight existed still gets it.
+     *
+     * <p>Mutates and returns the same instance. The caller is normally the live config, and
+     * repairing it in place is the point.
      *
      * @return the repaired config, or null if it was null to begin with
      */
@@ -128,19 +106,8 @@ public class TemplateManager {
         if (isBlank(c.getName())) c.setName("Default");
         if (c.getHeadersToHide() == null) c.setHeadersToHide("");
         if (c.getHeaderScope() == null) c.setHeaderScope(ScopeTarget.BOTH);
-        if (c.getLayoutMode() == null) c.setLayoutMode(LayoutMode.SIDE_BY_SIDE);
-        if (isBlank(c.getContentWidth())) c.setContentWidth("Medium (1000px)");
         if (c.getRequestLineRanges() == null) c.setRequestLineRanges("");
         if (c.getResponseLineRanges() == null) c.setResponseLineRanges("");
-        if (isBlank(c.getWindowStyle())) c.setWindowStyle("Caido");
-        if (c.getWatermarkText() == null) c.setWatermarkText("");
-        // Also catches NaN, which is what a JSON "not a number" deserializes to and which would
-        // otherwise reach BufferedImage's width calculation.
-        if (!(c.getScaleFactor() > 0)) c.setScaleFactor(2.0);
-        // A template written before the divider existed deserializes to 0.0, and a divider
-        // dragged to either end would leave a pane with no room for a glyph. Both read as a
-        // rendering fault rather than as a setting, so both come back to the default.
-        if (!(c.getSplitRatio() >= 0.05 && c.getSplitRatio() <= 0.95)) c.setSplitRatio(0.5);
 
         Map<String, String> colors = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : c.getSyntaxColors().entrySet()) {
@@ -154,7 +121,8 @@ public class TemplateManager {
                 if (h == null) continue;
                 if (h.getPattern() == null) h.setPattern("");
                 if (h.getTarget() == null) h.setTarget(ScopeTarget.BOTH);
-                if (Tokens.hex(h.getColorHex()) == null) h.setColorHex(DEFAULT_HIGHLIGHT);
+                if (Tokens.hex(h.getColorHex()) == null) h.setColorHex(TemplateConfig.DEFAULT_HIGHLIGHT);
+                h.setPattern(upgradeDatePattern(h));
                 highlights.add(h);
             }
         }
@@ -166,14 +134,77 @@ public class TemplateManager {
                 if (r == null) continue;
                 if (r.getPattern() == null) r.setPattern("");
                 if (r.getTarget() == null) r.setTarget(ScopeTarget.BOTH);
-                if (r.getMode() == null) r.setMode(RedactionMode.MASK);
                 if (r.getCaptureGroup() < 0) r.setCaptureGroup(0);
                 redactions.add(r);
             }
         }
+        nameShippedRules(highlights, redactions);
+        // Bring a saved config up to the shipped rule set, once. A file written before a default
+        // existed carries the old version number, so the rules it never had are added here; a
+        // file already at this version is left exactly as the user left it, deleted rules
+        // included. Without the version a deleted Cookie rule would come back on every reload.
+        if (c.getDefaultsVersion() < TemplateConfig.DEFAULTS_VERSION) {
+            for (RedactionRule candidate : TemplateConfig.defaultRedactions()) {
+                boolean alreadyThere = false;
+                for (RedactionRule existing : redactions) {
+                    if (existing.getPattern().equals(candidate.getPattern())) {
+                        alreadyThere = true;
+                        break;
+                    }
+                }
+                if (!alreadyThere) redactions.add(candidate);
+            }
+            c.setDefaultsVersion(TemplateConfig.DEFAULTS_VERSION);
+        }
+
         c.setRedactions(redactions);
 
         return c;
+    }
+
+    /**
+     * Gives the shipped rules their names on a file that was written before they had any.
+     *
+     * <p>Only a blank name is filled, and only on a rule whose pattern is character for character
+     * a shipped one. A file that predates names would otherwise open with seven unnamed rows
+     * beside every rule the user has named, and the name the user typed is never overwritten.
+     */
+    private static void nameShippedRules(List<HighlightRule> highlights,
+                                         List<RedactionRule> redactions) {
+        for (HighlightRule h : highlights) {
+            if (!h.getName().isEmpty()) continue;
+            if (TemplateConfig.DEFAULT_DATE_PATTERN.equals(h.getPattern())) {
+                h.setName(TemplateConfig.DEFAULT_DATE_NAME);
+            }
+        }
+        for (RedactionRule r : redactions) {
+            if (!r.getName().isEmpty()) continue;
+            for (RedactionRule shipped : TemplateConfig.defaultRedactions()) {
+                if (shipped.getPattern().equals(r.getPattern())) {
+                    r.setName(shipped.getName());
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Widens the shipped {@code Date} rule to cover the value, not just the name.
+     *
+     * <p>The rule used to match {@code ^Date:}, so a highlighted response showed a yellow
+     * {@code Date:} and a value left plain. A settings file written then still carries the old
+     * pattern, and changing the default alone would never reach it: the file's rule is the one
+     * that gets compiled. Rewriting it here is what makes an existing install show the fix.
+     *
+     * <p>Both conditions have to hold. A rule the user wrote themselves for the request side is
+     * not this rule, and is left alone.
+     */
+    private static String upgradeDatePattern(HighlightRule rule) {
+        if (TemplateConfig.LEGACY_DATE_PATTERN.equals(rule.getPattern())
+                && rule.getTarget() == ScopeTarget.RESPONSE) {
+            return TemplateConfig.DEFAULT_DATE_PATTERN;
+        }
+        return rule.getPattern();
     }
 
     private static boolean isBlank(String s) {

@@ -3,9 +3,8 @@ package burp.screenshot.ui;
 import burp.screenshot.design.Icons;
 import burp.screenshot.design.Theme;
 import burp.screenshot.design.Tokens;
-import burp.screenshot.engine.RenderContext;
+import burp.screenshot.engine.Rules;
 import burp.screenshot.model.HighlightRule;
-import burp.screenshot.model.RedactionMode;
 import burp.screenshot.model.RedactionRule;
 import burp.screenshot.model.ScopeTarget;
 import burp.screenshot.ui.components.Buttons;
@@ -19,6 +18,7 @@ import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JColorChooser;
 import javax.swing.JComponent;
+import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JSpinner;
 import javax.swing.JTextField;
@@ -57,8 +57,13 @@ public class RuleCard extends JPanel {
 
     private static final Color FALLBACK_HIGHLIGHT = new Color(0xf5be28);
 
+    /** The two redaction styles, as the picker writes them. See {@link RedactionRule}. */
+    public static final String BLUR = "Blur";
+    public static final String HIDE = "Hide";
+
     private final Listener listener;
     private final JTextField patternField;
+    private final JTextField nameField;
 
     private HighlightRule highlight;
     private RedactionRule redaction;
@@ -72,6 +77,18 @@ public class RuleCard extends JPanel {
         setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Theme.tokens().border),
                 BorderFactory.createEmptyBorder(Tokens.SM, Tokens.SM, Tokens.SM, Tokens.SM)));
+
+        // The name is the first thing on the card and the pattern the second, so a list of rules
+        // reads as a list of names. Scanning the patterns instead means reading a regex per card
+        // to find the one for the session cookie.
+        nameField = Fields.text("", "Name this rule");
+        nameField.setToolTipText("Optional. Shown at the top of the card, so the list can be "
+                + "read without opening a pattern.");
+        nameField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { onNameEdited(); }
+            @Override public void removeUpdate(DocumentEvent e) { onNameEdited(); }
+            @Override public void changedUpdate(DocumentEvent e) { onNameEdited(); }
+        });
 
         patternField = Fields.text("", "Regex or literal, e.g. Bearer\\s+([A-Za-z0-9._-]+)");
         patternField.setToolTipText("Pattern to find. Regex is used when the rule has it enabled.");
@@ -118,8 +135,11 @@ public class RuleCard extends JPanel {
             listener.changed();
         });
 
-        patternField.setText(rule.getPattern());
+        nameField.setText(rule.getName());
         add(headerRow(enabled));
+
+        patternField.setText(rule.getPattern());
+        add(patternRow());
 
         add(gap());
 
@@ -136,10 +156,10 @@ public class RuleCard extends JPanel {
 
         add(gap());
 
-        SwatchButton swatch = new SwatchButton(RenderContext.parseColor(rule.getColorHex(), FALLBACK_HIGHLIGHT));
+        SwatchButton swatch = new SwatchButton(Rules.parseColor(rule.getColorHex(), FALLBACK_HIGHLIGHT));
         swatch.addActionListener(e -> {
             Color chosen = JColorChooser.showDialog(SwingUtilities.getWindowAncestor(this),
-                    "Highlight color", RenderContext.parseColor(rule.getColorHex(), FALLBACK_HIGHLIGHT));
+                    "Highlight color", Rules.parseColor(rule.getColorHex(), FALLBACK_HIGHLIGHT));
             if (chosen == null) return;
             rule.setColorHex(Tokens.toHex(chosen));
             swatch.setColor(chosen);
@@ -156,8 +176,11 @@ public class RuleCard extends JPanel {
             listener.changed();
         });
 
-        patternField.setText(rule.getPattern());
+        nameField.setText(rule.getName());
         add(headerRow(enabled));
+
+        patternField.setText(rule.getPattern());
+        add(patternRow());
 
         add(gap());
 
@@ -174,14 +197,6 @@ public class RuleCard extends JPanel {
 
         add(gap());
 
-        SegmentedControl<RedactionMode> mode = new SegmentedControl<>(
-                List.of(RedactionMode.BLUR, RedactionMode.MASK),
-                m -> m == RedactionMode.BLUR ? "Blur" : "Solid",
-                rule.getMode(), m -> {
-            rule.setMode(m);
-            listener.changed();
-        });
-
         JSpinner group = new JSpinner(new SpinnerNumberModel(rule.getCaptureGroup(), 0, 9, 1));
         group.setFont(Theme.tokens().ui);
         group.setPreferredSize(new Dimension(58, 24));
@@ -192,11 +207,22 @@ public class RuleCard extends JPanel {
             listener.changed();
         });
 
-        add(pairedRow(Fields.muted("Style"), mode, Fields.muted("Group"), group));
+        // The card says what the rule does rather than leaving it to be remembered, and it is
+        // where a rule made from the right-click menu turns up: without a control here, a hidden
+        // rule would read as "Blur" and there would be no way to tell them apart or change one.
+        SegmentedControl<String> style = new SegmentedControl<>(
+                List.of(BLUR, HIDE), s -> s, rule.isHide() ? HIDE : BLUR, chosen -> {
+                    rule.setHide(HIDE.equals(chosen));
+                    listener.changed();
+                });
+        style.setToolTipText("Blur dims the value, hide takes it out and leaves a marker.");
+        add(pairedRow(Fields.muted("Group"), group, Fields.muted("Style"), style));
 
         validatePattern();
     }
 
+    /** The name, the on/off switch and the delete button: what the rule is called and whether
+     * it is on. The pattern gets the row below to itself, where it has the width to be read. */
     private JComponent headerRow(SwitchToggle enabled) {
         JButton delete = Buttons.iconOnly(Icons.trash(null, 13), "Delete this rule");
         delete.addActionListener(e -> listener.deleted());
@@ -205,8 +231,17 @@ public class RuleCard extends JPanel {
         row.setOpaque(false);
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
         row.add(enabled, BorderLayout.WEST);
-        row.add(patternField, BorderLayout.CENTER);
+        row.add(nameField, BorderLayout.CENTER);
         row.add(delete, BorderLayout.EAST);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        return row;
+    }
+
+    private JComponent patternRow() {
+        JPanel row = new JPanel(new BorderLayout());
+        row.setOpaque(false);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.add(patternField, BorderLayout.CENTER);
         row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
         return row;
     }
@@ -257,6 +292,13 @@ public class RuleCard extends JPanel {
     }
 
     // ------------------------------------------------------------------ validation
+
+    private void onNameEdited() {
+        String name = nameField.getText();
+        if (highlight != null) highlight.setName(name);
+        if (redaction != null) redaction.setName(name);
+        listener.changed();
+    }
 
     private void onPatternEdited() {
         String pattern = patternField.getText();
@@ -336,39 +378,46 @@ public class RuleCard extends JPanel {
      * in one flat list would let the user redact the very thing they meant to emphasise.
      */
     public enum Preset {
-        // Redaction: values that must not leave the machine.
-        BEARER("Bearer token", "Bearer\\s+[A-Za-z0-9._~+/-]+=*", false, RedactionMode.MASK, 0, null),
-        SESSION("session_id", "(?i)session[_-]?id[\"']?\\s*[:=]\\s*[\"']?([^\"'&;\\s]+)",
-                false, RedactionMode.MASK, 1, null),
-        COOKIE("Cookie", "(?i)^Cookie:\\s*(.+)$", false, RedactionMode.MASK, 1, null),
+        // Redaction: values that must not leave the machine. Every one of these blurs, which is
+        // the style a credential wants: the reader sees that a token was there without reading
+        // it. A preset that hid instead would be a header name with an unexplained gap after it,
+        // so the style stays changeable on the card rather than baked into the preset.
+        //
+        // The header presets capture only the value and leave the name on screen. A reader of the
+        // PoC still needs to see that the exchange carried a Cookie or an Authorization; it is the
+        // secret beside it that has to go.
+        AUTHORIZATION("Authorization header", "(?i)^(Proxy-)?Authorization:\\s*(.+)$",
+                false, 2, null),
+        COOKIE("Cookie", "(?i)^Cookie:\\s*(.+)$", false, 1, null),
+        SET_COOKIE("Set-Cookie", "(?i)^Set-Cookie:\\s*(.+)$", false, 1, null),
         PASSWORD("password", "(?i)(password|passwd|pwd)[\"']?\\s*[:=]\\s*[\"']?([^\"'&;\\s]+)",
-                false, RedactionMode.MASK, 2, null),
+                false, 2, null),
         API_KEY("api_key", "(?i)(api[_-]?key|apikey|access[_-]?token)[\"']?\\s*[:=]\\s*[\"']?([^\"'&;\\s]+)",
-                false, RedactionMode.MASK, 2, null),
+                false, 2, null),
+        SESSION("session_id", "(?i)session[_-]?id[\"']?\\s*[:=]\\s*[\"']?([^\"'&;\\s]+)",
+                false, 1, null),
+        BEARER("Bearer token", "Bearer\\s+[A-Za-z0-9._~+/-]+=*", false, 0, null),
         JWT("JWT", "(?i)\\b(eyJ[A-Za-z0-9_-]{6,}\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)",
-                false, RedactionMode.MASK, 1, null),
+                false, 1, null),
 
         // Highlights: payloads worth pointing at, not hiding.
         SQLI("SQLi", "(?i)(union\\s+select|or\\s+1=1|'\\s*or\\s*'|sleep\\s*\\(|benchmark\\s*\\()",
-                true, null, 0, "#f5be28"),
+                true, 0, "#f5be28"),
         XSS("XSS", "(?i)(<script|javascript:|onerror\\s*=|onload\\s*=)",
-                true, null, 0, "#f5be28"),
+                true, 0, "#f5be28"),
         ADMIN("Admin", "(?i)\\b(superadmin|administrator|is_?admin)\\b",
-                true, null, 0, "#f5be28");
+                true, 0, "#f5be28");
 
         private final String label;
         private final String pattern;
         private final boolean highlight;
-        private final RedactionMode mode;
         private final int captureGroup;
         private final String colorHex;
 
-        Preset(String label, String pattern, boolean highlight,
-               RedactionMode mode, int captureGroup, String colorHex) {
+        Preset(String label, String pattern, boolean highlight, int captureGroup, String colorHex) {
             this.label = label;
             this.pattern = pattern;
             this.highlight = highlight;
-            this.mode = mode;
             this.captureGroup = captureGroup;
             this.colorHex = colorHex;
         }
@@ -377,8 +426,6 @@ public class RuleCard extends JPanel {
         public String pattern() { return pattern; }
         /** True for a highlight preset, false for a redaction preset. */
         public boolean isHighlight() { return highlight; }
-        /** Only meaningful when {@link #isHighlight()} is false. */
-        public RedactionMode mode() { return mode; }
         /** 0 means the whole match; the renderer falls back to 0 for an out-of-range group. */
         public int captureGroup() { return captureGroup; }
         /** Only meaningful when {@link #isHighlight()} is true. */

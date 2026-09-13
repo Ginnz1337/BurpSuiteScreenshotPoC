@@ -15,6 +15,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.border.Border;
+import javax.swing.plaf.basic.BasicComboBoxEditor;
 import javax.swing.plaf.basic.BasicComboBoxUI;
 import javax.swing.plaf.basic.BasicComboPopup;
 import javax.swing.plaf.basic.ComboPopup;
@@ -314,6 +315,31 @@ public final class Fields {
         int w = widest + Tokens.XL + Tokens.LG;
         c.setPreferredSize(new Dimension(w, 28));
         c.setMinimumSize(new Dimension(60, 28));
+        return c;
+    }
+
+    /**
+     * A combo the user can type in, for a value that is usually one of a known few.
+     *
+     * <p>{@link #combo} clears focusability, which is right for a list that is only ever picked
+     * from and wrong here: an unfocusable editor never takes a caret, so the box would look
+     * ready for typing and swallow every keystroke.
+     *
+     * <p>The editor is built by {@link #text}, so the caret, the selection and the focus ring
+     * resolve their colours per paint like every other field in the dialog. The look and feel's
+     * own editor would keep the previous theme's colours.
+     */
+    public static <T> JComboBox<T> editableCombo(T[] items) {
+        JComboBox<T> c = combo(items);
+        c.setEditable(true);
+        c.setFocusable(true);
+        c.setEditor(new BasicComboBoxEditor() {
+            @Override protected JTextField createEditorComponent() {
+                return text("");
+            }
+        });
+        c.setPreferredSize(new Dimension(190, 28));
+        c.setMinimumSize(new Dimension(110, 28));
         return c;
     }
 

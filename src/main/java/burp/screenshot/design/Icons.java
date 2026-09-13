@@ -160,6 +160,19 @@ public final class Icons {
         };
     }
 
+    public static Icon chevronUp(Color color, int size) {
+        return new Base(color, size) {
+            @Override public void paintIcon(Component c, Graphics g, int x, int y) {
+                Graphics2D g2 = prepare(c, g, x, y);
+                stroke(g2, 1.6f);
+                int s = size;
+                g2.drawLine(s / 4, s * 3 / 5, s / 2, s * 2 / 5);
+                g2.drawLine(s / 2, s * 2 / 5, s * 3 / 4, s * 3 / 5);
+                g2.dispose();
+            }
+        };
+    }
+
     public static Icon chevronRight(Color color, int size) {
         return new Base(color, size) {
             @Override public void paintIcon(Component c, Graphics g, int x, int y) {

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host "  Building Burp Suite PoC Screenshot Extension    " -ForegroundColor Green
+Write-Host "  Building Burp Suite Screenshot PoC Extension     " -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Cyan
 
 # 1. Detect the newest installed JDK.
@@ -108,5 +108,6 @@ $size = (Get-Item $outputJar).Length / 1KB
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host " [SUCCESS] Built and verified" -ForegroundColor Green
 Write-Host " Output: $outputJar ($([Math]::Round($size, 1)) KB)" -ForegroundColor Cyan
-Write-Host " Preview images: build\test_poc_dark.png, build\test_poc_light.png" -ForegroundColor Cyan
+Write-Host " Captures: build\test_styled_dark.png, build\test_styled_light.png" -ForegroundColor Cyan
+Write-Host " Wrap captures: build\test_wrap_on.png, build\test_wrap_off.png" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Green

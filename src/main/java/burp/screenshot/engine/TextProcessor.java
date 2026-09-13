@@ -31,20 +31,64 @@ public class TextProcessor {
 
     public static class ProcessedHttp {
         public List<LineItem> lines = new ArrayList<>();
+
+        /**
+         * Lines the ranges took out that would otherwise have been on screen.
+         *
+         * <p>Counted after header hiding, because that is the number that matches what the user
+         * sees change. A line the ranges cover but the header list had already removed is not a
+         * line anyone can watch disappear, and reporting it would make the count disagree with
+         * the view.
+         */
+        public int removedLineCount;
+
+        /** Entries in a line-ranges field that could not be read, kept verbatim to report back. */
+        public final List<String> ignoredRangeEntries = new ArrayList<>();
     }
 
     public static ProcessedHttp processRequest(String rawRequest, TemplateConfig config) {
         boolean shouldFilterHeaders = config.getHeaderScope() == ScopeTarget.BOTH ||
                                       config.getHeaderScope() == ScopeTarget.REQUEST;
         return process(rawRequest, config.getHeadersToHide(), shouldFilterHeaders,
-                config.getRequestLineRanges(), false);
+                config.getRequestLineRanges(), false, Rules.hiddenForSide(config, true));
     }
 
     public static ProcessedHttp processResponse(String rawResponse, TemplateConfig config) {
         boolean shouldFilterHeaders = config.getHeaderScope() == ScopeTarget.BOTH ||
                                       config.getHeaderScope() == ScopeTarget.RESPONSE;
         return process(rawResponse, config.getHeadersToHide(), shouldFilterHeaders,
-                config.getResponseLineRanges(), true);
+                config.getResponseLineRanges(), true, Rules.hiddenForSide(config, false));
+    }
+
+    /**
+     * The header names of a raw message, in the order they appear, without duplicates.
+     *
+     * <p>Used to offer a list of names to hide, so the user picks one instead of typing it and
+     * getting the spelling wrong. The rule for what counts as a header is the same one the
+     * filter uses: a colon past the first character, before the blank line.
+     */
+    public static List<String> headerNames(String raw) {
+        List<String> out = new ArrayList<>();
+        if (raw == null || raw.isEmpty()) return out;
+
+        String[] lines = raw.split("\r?\n", -1);
+        for (int i = 1; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.trim().isEmpty()) break;
+            int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+            String name = line.substring(0, colon).trim();
+            if (name.isEmpty()) continue;
+            boolean seen = false;
+            for (String existing : out) {
+                if (existing.equalsIgnoreCase(name)) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) out.add(name);
+        }
+        return out;
     }
 
     private static class Range {
@@ -56,8 +100,29 @@ public class TextProcessor {
         }
     }
 
+    /**
+     * The lines a ranges field asked to leave out.
+     *
+     * <p>Empty and {@code all} both mean nothing is removed. {@code all} has to keep meaning
+     * "keep everything": a field that took the whole message away on a stray word would be a
+     * trap, and it is the value that was in the box before this field meant removal.
+     */
+    private static final class Removals {
+
+        final List<Range> ranges = new ArrayList<>();
+        final List<String> ignored = new ArrayList<>();
+
+        boolean covers(int lineNumber) {
+            for (Range r : ranges) {
+                if (lineNumber >= r.start && lineNumber <= r.end) return true;
+            }
+            return false;
+        }
+    }
+
     private static ProcessedHttp process(String raw, String headersToHideText, boolean filterHeaders,
-                                         String lineRangesText, boolean isResponse) {
+                                         String lineRangesText, boolean isResponse,
+                                         List<Rules.Rule> hidden) {
         ProcessedHttp result = new ProcessedHttp();
         if (raw == null || raw.isEmpty()) {
             return result;
@@ -95,34 +160,28 @@ public class TextProcessor {
             headerEndIndex = allLines.length;
         }
 
-        // Filter headers while preserving original line numbers (1-based)
-        List<LineItem> keptLines = new ArrayList<>();
+        // Every line of the message is walked in its own order, so the numbers in a ranges field
+        // are the numbers the gutter shows, and a hidden header leaves the same silent gap it
+        // always has.
+        Removals removals = parseRemovals(lineRangesText, allLines.length);
+        result.ignoredRangeEntries.addAll(removals.ignored);
 
         SyntaxHighlighter.LineKind firstLineKind = isResponse
                 ? SyntaxHighlighter.LineKind.STATUS_LINE
                 : SyntaxHighlighter.LineKind.REQUEST_LINE;
 
+        int pendingRemoval = 0;
+
         for (int i = 0; i < allLines.length; i++) {
             String line = allLines[i];
             int originalLineNum = i + 1;
 
-            // Line 0 is Request-Line or Status-Line, always preserve
-            if (i == 0) {
-                keptLines.add(new LineItem(line, originalLineNum, firstLineKind));
-                continue;
-            }
-
-            // Headers section
-            if (i < headerEndIndex) {
-                if (filterHeaders) {
-                    int colonPos = line.indexOf(':');
-                    if (colonPos > 0) {
-                        String headerName = line.substring(0, colonPos).trim().toLowerCase();
-                        if (alwaysShow.contains(headerName)) {
-                            keptLines.add(new LineItem(line, originalLineNum, SyntaxHighlighter.LineKind.HEADER));
-                            continue;
-                        }
-
+            // Headers section, but the first line is the Request-Line or Status-Line.
+            if (i > 0 && i < headerEndIndex && filterHeaders) {
+                int colonPos = line.indexOf(':');
+                if (colonPos > 0) {
+                    String headerName = line.substring(0, colonPos).trim().toLowerCase();
+                    if (!alwaysShow.contains(headerName)) {
                         boolean shouldHide = false;
                         for (String rule : hideRules) {
                             if (rule.endsWith("*")) {
@@ -136,107 +195,175 @@ public class TextProcessor {
                                 break;
                             }
                         }
-
                         if (shouldHide) {
-                            continue; // Skip this header
+                            continue; // Skip this header, leaving its number out of the gutter
                         }
                     }
                 }
-                keptLines.add(new LineItem(line, originalLineNum, SyntaxHighlighter.LineKind.HEADER));
+            }
+
+            if (removals.covers(originalLineNum)) {
+                pendingRemoval++;
+                result.removedLineCount++;
+                continue;
+            }
+            if (pendingRemoval > 0) {
+                result.lines.add(new LineItem(
+                        "··· [" + pendingRemoval + " lines omitted] ···", -1, true));
+                pendingRemoval = 0;
+            }
+
+            if (i == 0) {
+                result.lines.add(new LineItem(hideSpans(line, hidden), originalLineNum, firstLineKind));
+            } else if (i < headerEndIndex) {
+                result.lines.add(new LineItem(hideSpans(line, hidden), originalLineNum,
+                        SyntaxHighlighter.LineKind.HEADER));
             } else {
                 // Body section: the separating blank line then the payload.
                 SyntaxHighlighter.LineKind bodyKind = line.trim().isEmpty()
                         ? SyntaxHighlighter.LineKind.BLANK
                         : SyntaxHighlighter.LineKind.BODY;
-                keptLines.add(new LineItem(line, originalLineNum, bodyKind));
+                result.lines.add(new LineItem(hideSpans(line, hidden), originalLineNum, bodyKind));
             }
+        }
+
+        if (pendingRemoval > 0) {
+            result.lines.add(new LineItem(
+                    "··· [" + pendingRemoval + " lines omitted] ···", -1, true));
         }
 
         // Remove trailing blank lines
-        while (keptLines.size() > 1 && keptLines.get(keptLines.size() - 1).text.trim().isEmpty()) {
-            keptLines.remove(keptLines.size() - 1);
-        }
-
-        int total = keptLines.size();
-        if (total == 0) return result;
-
-        // Parse Multi-range line selection (e.g. "1-5, 20-35, 100-110")
-        List<Range> parsedRanges = parseRanges(lineRangesText, total);
-
-        // Build final list with omission separators between disconnected ranges
-        for (int rIdx = 0; rIdx < parsedRanges.size(); rIdx++) {
-            Range r = parsedRanges.get(rIdx);
-
-            // Add omission marker if there was a gap
-            if (rIdx > 0) {
-                Range prev = parsedRanges.get(rIdx - 1);
-                int omittedCount = r.start - prev.end - 1;
-                if (omittedCount > 0) {
-                    result.lines.add(new LineItem("··· [" + omittedCount + " lines omitted] ···", -1, true));
-                }
-            }
-
-            for (int i = r.start - 1; i < r.end && i < total; i++) {
-                result.lines.add(keptLines.get(i));
-            }
+        while (result.lines.size() > 1
+                && !result.lines.get(result.lines.size() - 1).isOmission
+                && result.lines.get(result.lines.size() - 1).text.trim().isEmpty()) {
+            result.lines.remove(result.lines.size() - 1);
         }
 
         return result;
     }
 
-    private static List<Range> parseRanges(String input, int maxLines) {
-        List<Range> list = new ArrayList<>();
-        if (input == null || input.trim().isEmpty() || "all".equalsIgnoreCase(input.trim())) {
-            list.add(new Range(1, maxLines));
-            return list;
+    /** What a hidden span leaves behind, in the same voice as the omitted-lines marker. */
+    public static String hiddenMarker(int chars) {
+        return "[" + chars + " chars hidden]";
+    }
+
+    /**
+     * The line with every hidden span taken out and a marker left in its place.
+     *
+     * <p>This is where hide differs from blur, and it has to happen here rather than at paint
+     * time. A blurred value keeps its characters and is painted over, so the text under the wash
+     * is still there to select and to copy. A hidden value must not be, or the screenshot would
+     * be the only place it was gone from. So the replacement happens before the line exists, and
+     * every consumer of a {@link LineItem} sees the marker and never the payload.
+     *
+     * <p>The whole line is scanned against the original text first and the substitutions are made
+     * afterwards in one pass. Replacing as matches are found would shift the offsets of every
+     * match behind it, so a line carrying two payloads would hide the wrong characters.
+     */
+    private static String hideSpans(String line, List<Rules.Rule> hidden) {
+        if (line == null || line.isEmpty() || hidden == null || hidden.isEmpty()) return line;
+
+        List<int[]> marks = new ArrayList<>();
+        for (Rules.Rule rule : hidden) {
+            rule.find(line, (start, end) -> marks.add(new int[]{start, end}));
         }
+        if (marks.isEmpty()) return line;
 
-        String[] parts = input.split("[,;]");
-        for (String p : parts) {
-            String trimmed = p.trim();
-            if (trimmed.isEmpty()) continue;
+        marks.sort(Comparator.comparingInt(m -> m[0]));
 
+        StringBuilder out = new StringBuilder(line.length());
+        int cursor = 0;
+        int i = 0;
+        while (i < marks.size()) {
+            int start = marks.get(i)[0];
+            int end = marks.get(i)[1];
+            // Two rules can cover the same characters, and a run that overlaps is one omission.
+            // Reporting it twice would count characters that only went away once.
+            int j = i + 1;
+            while (j < marks.size() && marks.get(j)[0] <= end) {
+                end = Math.max(end, marks.get(j)[1]);
+                j++;
+            }
+            i = j;
+            if (start < cursor || end <= start) continue;
+            out.append(line, cursor, start);
+            out.append(hiddenMarker(end - start));
+            cursor = end;
+        }
+        out.append(line, cursor, line.length());
+        return out.toString();
+    }
+
+    /**
+     * How many of the lines in a span a ranges field already takes out.
+     *
+     * <p>The gutter menu uses this to disable itself when the whole span is gone. A field like
+     * {@code 17-19,22-24} covers both ends of {@code 17-24} but not its middle, so looking only
+     * at the ends would call a span removed while two of its lines are still on screen.
+     */
+    public static int removedBetween(String rangesText, int first, int last) {
+        Removals removals = parseRemovals(rangesText, Integer.MAX_VALUE);
+        int count = 0;
+        for (int line = first; line <= last; line++) {
+            if (removals.covers(line)) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Reads a line-ranges field as the set of lines to leave out.
+     *
+     * <p>Numbered against the whole message, which is what the gutter prints. An entry that
+     * cannot be read is collected rather than swallowed, so the settings dialog can say which
+     * one it did not understand instead of leaving the user to guess why nothing happened.
+     */
+    private static Removals parseRemovals(String input, int maxLines) {
+        Removals out = new Removals();
+        if (input == null) return out;
+
+        String whole = input.trim();
+        if (whole.isEmpty() || "all".equalsIgnoreCase(whole)) return out;
+
+        for (String part : input.split("[,;]")) {
+            String token = part.trim();
+            if (token.isEmpty()) continue;
+
+            int dash = token.indexOf('-');
             try {
-                if (trimmed.contains("-")) {
-                    String[] bounds = trimmed.split("-", 2);
-                    int s = Integer.parseInt(bounds[0].trim());
-                    int e = Integer.parseInt(bounds[1].trim());
-                    s = Math.max(1, Math.min(s, maxLines));
-                    e = Math.max(1, Math.min(e, maxLines));
-                    if (s <= e) {
-                        list.add(new Range(s, e));
-                    }
+                int start;
+                int end;
+                if (dash > 0) {
+                    start = Integer.parseInt(token.substring(0, dash).trim());
+                    end = Integer.parseInt(token.substring(dash + 1).trim());
                 } else {
-                    int num = Integer.parseInt(trimmed);
-                    num = Math.max(1, Math.min(num, maxLines));
-                    list.add(new Range(num, num));
+                    start = end = Integer.parseInt(token);
                 }
-            } catch (Exception ignored) {}
-        }
-
-        if (list.isEmpty()) {
-            list.add(new Range(1, maxLines));
-            return list;
-        }
-
-        // Sort by start line
-        list.sort(Comparator.comparingInt(r -> r.start));
-
-        // Merge overlapping ranges
-        List<Range> merged = new ArrayList<>();
-        Range cur = list.get(0);
-
-        for (int i = 1; i < list.size(); i++) {
-            Range next = list.get(i);
-            if (next.start <= cur.end + 1) {
-                cur.end = Math.max(cur.end, next.end);
-            } else {
-                merged.add(cur);
-                cur = next;
+                start = Math.max(1, start);
+                end = Math.min(maxLines, end);
+                if (start > end) {
+                    out.ignored.add(token); // Reversed, or past the end of the message.
+                    continue;
+                }
+                out.ranges.add(new Range(start, end));
+            } catch (NumberFormatException e) {
+                out.ignored.add(token);
             }
         }
-        merged.add(cur);
 
-        return merged;
+        out.ranges.sort(Comparator.comparingInt(r -> r.start));
+
+        List<Range> merged = new ArrayList<>();
+        for (Range next : out.ranges) {
+            if (!merged.isEmpty() && next.start <= merged.get(merged.size() - 1).end + 1) {
+                Range last = merged.get(merged.size() - 1);
+                last.end = Math.max(last.end, next.end);
+            } else {
+                merged.add(next);
+            }
+        }
+        out.ranges.clear();
+        out.ranges.addAll(merged);
+
+        return out;
     }
 }

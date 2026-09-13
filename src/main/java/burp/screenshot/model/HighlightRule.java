@@ -4,6 +4,13 @@ import java.util.UUID;
 
 public class HighlightRule {
     private String id;
+    /**
+     * What the user calls this rule, for telling one from another at a glance.
+     *
+     * <p>Free text and optional. A list of patterns is a list of regexes to read one by one, and
+     * nothing else on the card says which of them is the one for the session cookie.
+     */
+    private String name;
     private String pattern;
     private boolean regex;
     private ScopeTarget target;
@@ -12,6 +19,7 @@ public class HighlightRule {
 
     public HighlightRule() {
         this.id = UUID.randomUUID().toString();
+        this.name = "";
         this.pattern = "";
         this.regex = true;
         this.target = ScopeTarget.REQUEST;
@@ -21,6 +29,7 @@ public class HighlightRule {
 
     public HighlightRule(String pattern, boolean regex, ScopeTarget target, String colorHex) {
         this.id = UUID.randomUUID().toString();
+        this.name = "";
         this.pattern = pattern;
         this.regex = regex;
         this.target = target;
@@ -34,6 +43,15 @@ public class HighlightRule {
 
     public void setId(String id) {
         this.id = id;
+    }
+
+    /** Never null; a rule without a name reads as an empty field, not as a missing one. */
+    public String getName() {
+        return name == null ? "" : name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
     }
 
     public String getPattern() {
