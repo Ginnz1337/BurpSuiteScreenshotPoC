@@ -25,12 +25,13 @@ https://github.com/user-attachments/assets/d0acf7a2-6bd1-4c88-b299-5a2999175cd5
 
 ## Current Version
 
-**1.0.0**
+**1.0.1**
 
 ### Version History
 
 | Version | Date       | Summary                                                                                                                                                                                         |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0.1   | 2026-11-14 | Five fixes found by running the extension in Burp. The theme poll no longer outlives the extension, a selection over several lines is one block rule, dragging past the edge scrolls, the selection survives a scroll and an undo, and a body is read with the charset its header names. The highlight wash is darker. |
 | 1.0.0   | 2026-09-13 | First release. `ScreenshotPoC` tab in Repeater, Logger and Proxy, on the request and the response. Header hiding, line removal, highlight and redaction rules, gutter selection, search, undo. |
 
 ---
