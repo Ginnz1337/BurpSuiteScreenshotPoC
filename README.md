@@ -51,6 +51,13 @@ https://github.com/user-attachments/assets/d0acf7a2-6bd1-4c88-b299-5a2999175cd5
 - **Highlight and redaction rules**, literal or regex with a capture group, scoped to the
   request, the response, or both. Eleven presets ship with the extension, and seven redaction
   rules are on by default.
+- **Block rules.** A selection that runs over several lines becomes one rule covering the whole
+  run: blur and highlight paint every line of it, and hide takes those lines out and leaves the
+  `[N lines omitted]` marker. Dragging past the edge of the pane scrolls, so a block taller than
+  the viewport can still be selected.
+- **Bodies read with their own charset.** UTF-8 JSON is drawn as it was written, with the
+  `charset` the `Content-Type` names and UTF-8 when it names none, rather than one byte per
+  character.
 - **Blur that hides the value but keeps the shape.** Coordinate-keyed noise, not a black box, so
   two screenshots of one message are identical. A redaction can also hide its match outright.
 - **Right-click menus** in the text for highlight, blur, hide and rule removal, and in the
@@ -220,11 +227,12 @@ No CI is configured. The build is local, and its exit status is the gate.
 
 ## Testing
 
-`ScreenshotVerificationTest` is a plain `main` class with 33 checks. `build.ps1` runs it with
+`ScreenshotVerificationTest` is a plain `main` class with 40 checks. `build.ps1` runs it with
 `-ea` and fails the build on the first failed assertion. It covers the tab scope, header hiding,
-line ranges and their bad inputs, the Date rule and its migration, rule matching, undo, search,
-wrap at long unbroken tokens, the gutter menu, and the marks following the viewport on a 2,000
-line message.
+line ranges and their bad inputs, the Date rule and its migration, rule matching, block rules and
+their hidden form, undo, search, wrap at long unbroken tokens, the gutter menu, the charset a body
+is read with, the selection surviving a repaint and a rebuild, and the marks following the viewport
+on a 2,000 line message.
 
 Several checks measure pixels, not just state. The suite writes captures into `build\` and
 asserts on them:

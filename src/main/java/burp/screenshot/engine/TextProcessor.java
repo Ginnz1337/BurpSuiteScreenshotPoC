@@ -166,6 +166,19 @@ public class TextProcessor {
         Removals removals = parseRemovals(lineRangesText, allLines.length);
         result.ignoredRangeEntries.addAll(removals.ignored);
 
+        // A hidden rule whose literal runs over several lines takes those lines out, exactly as a
+        // ranges entry does, and leaves the same marker. Matched against the raw lines rather than
+        // against what is on screen: the header list may have taken a line out above the block,
+        // which moves every number in the gutter but not the text of the block itself.
+        if (hidden != null) {
+            for (Rules.Rule rule : hidden) {
+                if (!rule.isBlock()) continue;
+                for (Rules.BlockRun run : Rules.blockRuns(rule, Arrays.asList(allLines), null)) {
+                    removals.ranges.add(new Range(run.firstLine() + 1, run.lastLine() + 1));
+                }
+            }
+        }
+
         SyntaxHighlighter.LineKind firstLineKind = isResponse
                 ? SyntaxHighlighter.LineKind.STATUS_LINE
                 : SyntaxHighlighter.LineKind.REQUEST_LINE;

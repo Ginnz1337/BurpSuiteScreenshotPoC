@@ -24,6 +24,7 @@ import javax.swing.JTextField;
 import javax.swing.JTextPane;
 import javax.swing.JViewport;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.text.BadLocationException;
@@ -48,6 +49,7 @@ import java.awt.FlowLayout;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.IllegalComponentStateException;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
@@ -85,9 +87,10 @@ public class StyledMessageView extends JPanel {
      *
      * <p>Painted under the glyphs, so raising it darkens the band without touching the text. The
      * default has to survive a screenshot: a wash too faint to see in the PNG is a wash that did
-     * not mark anything.
+     * not mark anything, which is what a reader of the first release reported — the band was
+     * there on screen and barely there in the picture that went into the report.
      */
-    private static final int HIGHLIGHT_ALPHA = 120;
+    private static final int HIGHLIGHT_ALPHA = 175;
 
     /**
      * How hard the redaction wash presses the glyph down towards the background.
@@ -141,6 +144,19 @@ public class StyledMessageView extends JPanel {
     private final JTextField searchField;
     private final JLabel matchLabel;
 
+    /**
+     * Where the pointer was while a drag is held past the edge of the pane, in screen
+     * coordinates, or null when no such drag is running.
+     *
+     * <p>Screen coordinates, not pane ones. The pane is the scrolled view, so its own coordinate
+     * system moves with the document: a point that is worth chasing has to be re-read against the
+     * pane after every scroll, or it keeps naming the line it named when the drag began.
+     */
+    private Point dragScreenPoint;
+
+    /** Scrolls the view while a drag is held past the edge, so a long block can be selected. */
+    private Timer dragScroller;
+
     /** The search box, its stepper and the count, as one strip for the host toolbar. */
     private final JComponent searchBar;
 
@@ -176,6 +192,24 @@ public class StyledMessageView extends JPanel {
 
     /** Ranges a redaction rule matched, painted over the text as an opaque patch. */
     private final List<Redaction> redactions = new ArrayList<>();
+
+    /**
+     * The tags of the highlights this view added, so a repaint can drop its own and no one
+     * else's.
+     *
+     * <p>Everything in the pane's highlighter is not ours: the caret paints the selection
+     * through it, and a {@code removeAllHighlights} here would take the selection with it.
+     */
+    private final List<Object> markTags = new ArrayList<>();
+
+    /**
+     * What the block rules cover, in document offsets.
+     *
+     * <p>Found once per rebuild rather than once per repaint. A block rule is matched against the
+     * lines of the whole message, which is a walk the scroll position has no say in, and the marks
+     * pass runs on every paint; doing the walk there would repeat it on every pixel of travel.
+     */
+    private final List<BlockMark> blockMarks = new ArrayList<>();
 
     /** Compiled once per rebuild, already filtered to this side of the exchange. */
     private Rules.Result rules = Rules.Result.empty();
@@ -274,7 +308,16 @@ public class StyledMessageView extends JPanel {
         });
         pane.addMouseListener(new MouseAdapter() {
             @Override public void mousePressed(MouseEvent e) { showMenuIfTrigger(e); }
-            @Override public void mouseReleased(MouseEvent e) { showMenuIfTrigger(e); }
+            @Override public void mouseReleased(MouseEvent e) {
+                stopDragScroll();
+                showMenuIfTrigger(e);
+            }
+        });
+        // Swing stops extending a selection at the edge of the viewport, so a block taller than
+        // the pane cannot be selected by dragging at all. A message is mostly longer than the
+        // pane, which made the block rules of a long body unusable.
+        pane.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override public void mouseDragged(MouseEvent e) { trackDragScroll(e); }
         });
 
         gutter = new Gutter();
@@ -446,6 +489,7 @@ public class StyledMessageView extends JPanel {
 
     @Override
     public void removeNotify() {
+        stopDragScroll();
         if (themeHandle != null) {
             try {
                 themeHandle.close();
@@ -504,6 +548,7 @@ public class StyledMessageView extends JPanel {
             textKey = key;
             buildDocument(t);
         }
+        refreshBlockMarks();
         marksStale = true;
         refreshMarks();
 
@@ -559,6 +604,12 @@ public class StyledMessageView extends JPanel {
         spans.clear();
         headerNames.clear();
         lineRefs.clear();
+        // The caret paints a selection through this same highlighter, so it has to let go of its
+        // own tag before the document under it is replaced: a tag whose marks belong to the old
+        // document is not something the next changeHighlight can survive.
+        boolean selectionWasVisible = pane.getCaret().isSelectionVisible();
+        pane.getCaret().setSelectionVisible(false);
+        markTags.clear();
         pane.getHighlighter().removeAllHighlights();
 
         StyledDocument doc = new DefaultStyledDocument();
@@ -576,6 +627,52 @@ public class StyledMessageView extends JPanel {
         }
 
         pane.setDocument(doc);
+        // Given back explicitly, because nothing else will give it back: only a focus change sets
+        // this flag, and a pane that already has the focus never fires focusGained again. An
+        // undo, which rebuilds the document, would otherwise leave the tab selecting invisibly
+        // until something took the focus away and returned it.
+        pane.getCaret().setSelectionVisible(selectionWasVisible);
+    }
+
+    /**
+     * Finds what the block rules cover.
+     *
+     * <p>A block rule is a literal made from a selection that ran over several lines, and it is
+     * matched across the lines rather than inside one. The lines of the whole message are walked
+     * because a match can begin anywhere; the marks pass below then keeps only the runs that
+     * reach the window on screen.
+     */
+    private void refreshBlockMarks() {
+        blockMarks.clear();
+        if (lineRefs.isEmpty()) return;
+        // Neither list is walked unless one of them holds a block. A message with no block rule,
+        // which is every message until somebody selects one, pays for two passes over the rules
+        // and nothing else.
+        if (!hasBlockRule(blurredRules) && !hasBlockRule(highlightRules)) return;
+
+        List<String> texts = new ArrayList<>(lineRefs.size());
+        int[] starts = new int[lineRefs.size()];
+        for (int i = 0; i < lineRefs.size(); i++) {
+            LineRef ref = lineRefs.get(i);
+            texts.add(ref.text());
+            starts[i] = ref.start();
+        }
+
+        for (Rules.Rule rule : blurredRules) {
+            if (!rule.isBlock()) continue;
+            for (Rules.BlockRun run : Rules.blockRuns(rule, texts, starts)) {
+                blockMarks.add(new BlockMark(run.firstLine(), run.lastLine(), run.start(), run.end(),
+                        null));
+            }
+        }
+        for (Rules.Rule rule : highlightRules) {
+            if (!rule.isBlock()) continue;
+            Color color = rule.color != null ? rule.color : Tokens.hex(TemplateConfig.DEFAULT_HIGHLIGHT);
+            for (Rules.BlockRun run : Rules.blockRuns(rule, texts, starts)) {
+                blockMarks.add(new BlockMark(run.firstLine(), run.lastLine(), run.start(), run.end(),
+                        color));
+            }
+        }
     }
 
     /**
@@ -628,13 +725,24 @@ public class StyledMessageView extends JPanel {
 
         highlights.clear();
         redactions.clear();
-        if (blurredRules.isEmpty() && highlightRules.isEmpty()) {
+        if (blurredRules.isEmpty() && highlightRules.isEmpty() && blockMarks.isEmpty()) {
             paintMarks();
             return;
         }
         for (int i = from; i <= to; i++) {
             LineRef ref = lineRefs.get(i);
             applyRules(ref.start(), ref.text(), ref.kind());
+        }
+        // Block ranges are whole runs, so they are kept or dropped as a run rather than rebuilt
+        // per line. Only the ones that reach the window are painted: a block above or below it
+        // would cost the pane the same work for pixels nobody can see.
+        for (BlockMark mark : blockMarks) {
+            if (mark.lastLine() < from || mark.firstLine() > to) continue;
+            if (mark.color() == null) {
+                redactions.add(new Redaction(mark.start(), mark.end()));
+            } else {
+                highlights.add(new Highlight(mark.start(), mark.end(), mark.color()));
+            }
         }
         paintMarks();
     }
@@ -738,6 +846,14 @@ public class StyledMessageView extends JPanel {
         }
     }
 
+    /** Whether any rule in a list covers more than one line. */
+    private static boolean hasBlockRule(List<Rules.Rule> rules) {
+        for (Rules.Rule rule : rules) {
+            if (rule.isBlock()) return true;
+        }
+        return false;
+    }
+
     /**
      * Turns the rules loose on one line.
      *
@@ -751,12 +867,17 @@ public class StyledMessageView extends JPanel {
         int limit = line.length();
         // Only the blurred rules paint. A hidden rule's text was replaced by a marker before the
         // line was built, so there is nothing left of it here to paint over.
+        //
+        // A block rule is skipped: its literal carries the breaks between lines, so it belongs to
+        // no single line and is painted from the run that refreshBlockMarks found for it.
         for (Rules.Rule rule : blurredRules) {
+            if (rule.isBlock()) continue;
             rule.find(line, (start, end) -> redactions.add(new Redaction(
                     lineStart + clamp(start, limit),
                     lineStart + clamp(end, limit))));
         }
         for (Rules.Rule rule : highlightRules) {
+            if (rule.isBlock()) continue;
             rule.find(line, (start, end) -> highlights.add(new Highlight(
                     lineStart + clamp(start, limit),
                     lineStart + clamp(end, limit),
@@ -935,14 +1056,21 @@ public class StyledMessageView extends JPanel {
      */
     private void paintMarks() {
         Highlighter highlighter = pane.getHighlighter();
-        highlighter.removeAllHighlights();
+        // Only this view's own ranges are dropped. Swing paints a selection as a highlight owned
+        // by the caret, so removeAllHighlights also took the selection away: a scroll repainted
+        // the marks, the selection vanished from the screen while the text stayed selected, and
+        // the caret was left holding a tag that no longer existed.
+        for (Object tag : markTags) {
+            highlighter.removeHighlight(tag);
+        }
+        markTags.clear();
 
         for (int i = 0; i < matchOffsets.size(); i++) {
             int at = matchOffsets.get(i);
             try {
-                highlighter.addHighlight(at, at + matchLength,
+                markTags.add(highlighter.addHighlight(at, at + matchLength,
                         new DefaultHighlighter.DefaultHighlightPainter(
-                                Tokens.alpha(Theme.tokens().accent, i == matchIndex ? 190 : 80)));
+                                Tokens.alpha(Theme.tokens().accent, i == matchIndex ? 190 : 80))));
             } catch (BadLocationException ignored) {
                 // The offset came from the live document, so this cannot happen.
             }
@@ -950,9 +1078,9 @@ public class StyledMessageView extends JPanel {
 
         for (Highlight mark : highlights) {
             try {
-                highlighter.addHighlight(mark.start(), mark.end(),
+                markTags.add(highlighter.addHighlight(mark.start(), mark.end(),
                         new DefaultHighlighter.DefaultHighlightPainter(
-                                Tokens.alpha(mark.color(), HIGHLIGHT_ALPHA)));
+                                Tokens.alpha(mark.color(), HIGHLIGHT_ALPHA))));
             } catch (BadLocationException ignored) {
                 // The range came from the live document, so this cannot happen.
             }
@@ -1030,6 +1158,111 @@ public class StyledMessageView extends JPanel {
         if (onRulesChanged != null) onRulesChanged.run();
     }
 
+    // ------------------------------------------------------------------ drag
+
+    /** How far the view scrolls per tick while a drag is held past the edge of the pane. */
+    private static final int DRAG_SCROLL_STEP = 14;
+
+    /** Pause between those ticks. Fast enough to cross a body, slow enough to aim with. */
+    private static final int DRAG_SCROLL_DELAY = 40;
+
+    /**
+     * Keeps a drag that has left the pane scrolling, so the selection can run past the viewport.
+     *
+     * <p>Swing clamps a drag to what is on screen: past the edge there is no line under the
+     * pointer to move the dot to, so the selection stops growing exactly where the useful part of
+     * a long body begins. The pointer goes on being reported while the button is held, and that is
+     * what this reads to scroll the view and take the dot to the row that has just arrived.
+     */
+    private void trackDragScroll(MouseEvent e) {
+        if ((e.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) == 0) {
+            stopDragScroll();
+            return;
+        }
+
+        JViewport viewport = scroll.getViewport();
+        int height = viewport.getExtentSize().height;
+        // Scrolling a view that already fits its content would only move the pointer over rows
+        // that are all on screen.
+        if (height <= 0 || viewport.getViewSize().height <= height) {
+            stopDragScroll();
+            return;
+        }
+
+        Point inViewport = SwingUtilities.convertPoint(pane, e.getPoint(), viewport);
+        if (inViewport.y >= 0 && inViewport.y < height) {
+            stopDragScroll();
+            return;
+        }
+
+        // Nothing left to reveal in the direction the pointer went, so a timer would tick to no
+        // purpose for as long as the button is held.
+        Rectangle visible = viewport.getViewRect();
+        int maxY = Math.max(0, viewport.getViewSize().height - height);
+        boolean below = inViewport.y >= height;
+        if ((below && visible.y >= maxY) || (!below && visible.y <= 0)) {
+            stopDragScroll();
+            return;
+        }
+
+        try {
+            dragScreenPoint = e.getLocationOnScreen();
+        } catch (IllegalComponentStateException ignored) {
+            // Not on screen, so there is nothing to chase.
+            stopDragScroll();
+            return;
+        }
+        if (dragScroller == null) {
+            dragScroller = new Timer(DRAG_SCROLL_DELAY, ev -> scrollDuringDrag());
+            dragScroller.start();
+        }
+    }
+
+    /** One tick: scroll a step toward the pointer, then take the selection to the row under it. */
+    private void scrollDuringDrag() {
+        if (dragScreenPoint == null) {
+            stopDragScroll();
+            return;
+        }
+
+        JViewport viewport = scroll.getViewport();
+        Point inViewport = new Point(dragScreenPoint);
+        SwingUtilities.convertPointFromScreen(inViewport, viewport);
+
+        Rectangle visible = viewport.getViewRect();
+        int height = viewport.getExtentSize().height;
+        int maxY = Math.max(0, viewport.getViewSize().height - height);
+        boolean below = inViewport.y >= height;
+
+        int next = Math.max(0, Math.min(maxY,
+                visible.y + (below ? DRAG_SCROLL_STEP : -DRAG_SCROLL_STEP)));
+        if (next == visible.y) {
+            // At one end of the message.
+            stopDragScroll();
+            return;
+        }
+        viewport.setViewPosition(new Point(visible.x, next));
+
+        // The row under the pointer, clamped to what the viewport shows. The point itself is
+        // outside the view, and asking the pane for it directly would name a line far past the
+        // one the reader is looking at.
+        Point onPane = new Point(inViewport.x, Math.max(0, Math.min(height - 1, inViewport.y)));
+        SwingUtilities.convertPoint(viewport, onPane, pane);
+        int offset = pane.viewToModel2D(onPane);
+        if (offset >= 0 && offset <= pane.getDocument().getLength()) {
+            pane.moveCaretPosition(offset);
+        }
+    }
+
+    /** Stops chasing the pointer. Called on release, when the drag comes back, and on unload. */
+    private void stopDragScroll() {
+        dragScreenPoint = null;
+        if (dragScroller != null) {
+            dragScroller.stop();
+            dragScroller = null;
+        }
+    }
+
     /**
      * What the menu should act on: the selected text if there is one, otherwise the token
      * under the pointer.
@@ -1055,6 +1288,10 @@ public class StyledMessageView extends JPanel {
      */
     private String headerNameFor(String text, TokenType type) {
         String candidate = text == null ? "" : text.trim();
+        // A selection that crossed a line break is a block, not a header. Without this the first
+        // token of the block would lend its type to the whole run and the menu would offer to
+        // hide a "header" several hundred characters long.
+        if (candidate.indexOf('\n') >= 0) return null;
         if (candidate.endsWith(":")) candidate = candidate.substring(0, candidate.length() - 1).trim();
         if (candidate.isEmpty()) return null;
 
@@ -1106,6 +1343,15 @@ public class StyledMessageView extends JPanel {
     private record Highlight(int start, int end, Color color) { }
 
     private record Redaction(int start, int end) { }
+
+    /**
+     * One run a block rule covers. A null colour is a redaction; anything else is a highlight.
+     *
+     * <p>The run's line numbers are kept as well as its offsets, because the marks pass decides
+     * what to paint from the window of lines on screen and would otherwise have to look every
+     * offset up again.
+     */
+    private record BlockMark(int firstLine, int lastLine, int start, int end, Color color) { }
 
     // ------------------------------------------------------------------ the pane
 

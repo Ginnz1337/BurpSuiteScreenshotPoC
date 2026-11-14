@@ -60,17 +60,20 @@ public final class MessageRuleMenu {
 
         ScopeTarget scope = target.isRequest() ? ScopeTarget.REQUEST : ScopeTarget.RESPONSE;
         String text = target.text();
-        String preview = text.length() > 28 ? text.substring(0, 28) + "..." : text;
 
-        // A rule is matched against one line at a time, so a selection that spans several lines
-        // can never match anything. Every entry here is disabled rather than offered and quietly
-        // doing nothing, which is the failure the gutter menu exists to avoid: a drag that ends
-        // past the end of a line is a normal thing to do, and the answer is to take those lines
-        // out by number instead.
-        boolean oneLine = text.indexOf('\n') < 0 && text.indexOf('\r') < 0;
-        String spanning = "A rule matches within one line. Select inside a line, "
-                + "or right-click the line numbers to remove whole lines.";
-        boolean usable = !text.isEmpty() && oneLine;
+        // A selection that ran over several lines becomes a block rule: one literal carrying the
+        // breaks between the lines it covered, matched as a run rather than inside a line. A drag
+        // that overshoots a line is the normal way to select a block of a body, so it is a case to
+        // support rather than a mistake to talk the user out of.
+        int breakAt = text.indexOf('\n');
+        boolean block = breakAt >= 0;
+        int lines = block ? countLines(text) : 1;
+
+        // The preview stops at the first line break. A label carrying the break would draw the
+        // rest of the block as one run of characters with no space where the line ended.
+        String head = block ? text.substring(0, breakAt) : text;
+        String preview = head.length() > 28 ? head.substring(0, 28) + "..." : head;
+        boolean usable = !text.isEmpty();
 
         JMenu highlight = new JMenu("Highlight");
         highlight.setFont(ui);
@@ -80,21 +83,28 @@ public final class MessageRuleMenu {
             JMenuItem item = new JMenuItem(entry[1], Icons.swatch(Tokens.hex(hex), 12));
             item.setFont(ui);
             item.addActionListener(e -> {
-                if (addHighlight(config, text, scope, hex)) onApplied.run();
+                if (addHighlight(config, text, scope, hex, block ? blockName(lines) : "")) {
+                    onApplied.run();
+                }
             });
             highlight.add(item);
         }
         highlight.setEnabled(usable);
-        if (!oneLine) highlight.setToolTipText(spanning);
+        if (block) {
+            highlight.setToolTipText("Paints every line of the selected block.");
+        }
         menu.add(highlight);
 
-        JMenuItem blur = new JMenuItem("Blur \"" + preview + "\"");
+        JMenuItem blur = new JMenuItem("Blur \"" + preview + "\""
+                + (block ? "  (" + lines + " lines)" : ""));
         blur.setFont(ui);
-        blur.setToolTipText(oneLine
-                ? "Dims the value. The characters stay in the message."
-                : spanning);
+        blur.setToolTipText(block
+                ? "Dims every line of the selected block. The characters stay in the message."
+                : "Dims the value. The characters stay in the message.");
         blur.addActionListener(e -> {
-            if (addRedaction(config, text, scope, false)) onApplied.run();
+            if (addRedaction(config, text, scope, false, block ? blockName(lines) : "")) {
+                onApplied.run();
+            }
         });
         blur.setEnabled(usable && !hasRedaction(config, text, scope, false));
         menu.add(blur);
@@ -102,14 +112,19 @@ public final class MessageRuleMenu {
         // The count is what makes this entry usable on a payload inside a very long line: the
         // preview is 28 characters of what may be thousands, and "did I catch the whole thing"
         // is the question a selection that long raises.
-        JMenuItem hideValue = new JMenuItem("Hide \"" + preview + "\"" + lengthSuffix(text));
+        JMenuItem hideValue = new JMenuItem("Hide \"" + preview + "\""
+                + (block ? "  (" + lines + " lines, " + text.length() + " chars)"
+                         : lengthSuffix(text)));
         hideValue.setFont(ui);
-        hideValue.setToolTipText(oneLine
-                ? "Takes the value out of the message and leaves a marker. "
-                        + "Unlike blur, the characters are gone."
-                : spanning);
+        hideValue.setToolTipText(block
+                ? "Takes the selected block out of the message. The lines it covered leave an "
+                        + "[N lines omitted] marker."
+                : "Takes the value out of the message and leaves a marker. "
+                        + "Unlike blur, the characters are gone.");
         hideValue.addActionListener(e -> {
-            if (addRedaction(config, text, scope, true)) onApplied.run();
+            if (addRedaction(config, text, scope, true, block ? blockName(lines) : "")) {
+                onApplied.run();
+            }
         });
         hideValue.setEnabled(usable && !hasRedaction(config, text, scope, true));
         menu.add(hideValue);
@@ -145,14 +160,32 @@ public final class MessageRuleMenu {
 
     // ------------------------------------------------------------------ edits
 
-    private static boolean addHighlight(TemplateConfig config, String text, ScopeTarget scope, String hex) {
+    private static boolean addHighlight(TemplateConfig config, String text, ScopeTarget scope,
+                                        String hex, String name) {
         if (text.isEmpty()) return false;
         for (HighlightRule h : config.getHighlights()) {
             if (h.getPattern().equals(text) && h.getTarget() == scope && h.isEnabled()) return false;
         }
         // Added at the end and enabled: the user just asked for it, so it has to be visible.
-        config.getHighlights().add(new HighlightRule(text, false, scope, hex));
+        HighlightRule rule = new HighlightRule(text, false, scope, hex);
+        // A block literal is dozens of lines long, so the list needs a name to be read at all.
+        if (!name.isEmpty()) rule.setName(name);
+        config.getHighlights().add(rule);
         return true;
+    }
+
+    /** How many lines a selection covers, so the menu and the rule list can say a number. */
+    private static int countLines(String text) {
+        int lines = 1;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') lines++;
+        }
+        return lines;
+    }
+
+    /** What a block rule is called in the rule list, where its literal cannot be read. */
+    private static String blockName(int lines) {
+        return "Block, " + lines + " lines";
     }
 
     /** How many characters the selection was, once the preview has stopped showing all of it. */
@@ -167,10 +200,12 @@ public final class MessageRuleMenu {
      * decision either way, and a single guard would leave the second entry greyed out.
      */
     private static boolean addRedaction(TemplateConfig config, String text, ScopeTarget scope,
-                                        boolean hide) {
+                                        boolean hide, String name) {
         if (text.isEmpty()) return false;
         if (hasRedaction(config, text, scope, hide)) return false;
-        config.getRedactions().add(new RedactionRule(text, false, scope, 0, hide));
+        RedactionRule rule = new RedactionRule(text, false, scope, 0, hide);
+        if (!name.isEmpty()) rule.setName(name);
+        config.getRedactions().add(rule);
         return true;
     }
 

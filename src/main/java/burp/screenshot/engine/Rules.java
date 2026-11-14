@@ -65,9 +65,29 @@ public final class Rules {
             return redaction && hide;
         }
 
+        /**
+         * True when the literal runs over more than one line.
+         *
+         * <p>The view can select a block — a JSON object, a form body — and the rule made from
+         * it is a literal carrying the line breaks between the lines it covered. Only a literal
+         * can be one: a regex is still tried one line at a time, because a pattern written for a
+         * line has no second line to match on.
+         */
+        public boolean isBlock() {
+            return regex == null && literal != null && literal.indexOf('\n') >= 0;
+        }
+
+        /** The lines a block literal covers, in order. Empty for anything that is not a block. */
+        public String[] blockLines() {
+            return isBlock() ? literal.split("\n", -1) : new String[0];
+        }
+
         /** Visits every match in {@code line} as a half-open character range. */
         public void find(String line, RangeSink sink) {
             if (line == null || line.isEmpty()) return;
+            // A block rule carries the breaks between its lines, so it can never match inside
+            // one. blockRuns walks the run of lines it covers instead.
+            if (isBlock()) return;
             if (regex == null) {
                 if (literal == null || literal.isEmpty()) return;
                 int from = 0;
@@ -95,6 +115,66 @@ public final class Rules {
 
     public interface RangeSink {
         void accept(int start, int end);
+    }
+
+    /**
+     * One run of lines a block rule covers.
+     *
+     * <p>{@code start} and {@code end} are document offsets, and are -1 when the caller asked for
+     * line numbers only. The text processor asks that way: it is deciding which lines to leave
+     * out, not which characters to paint.
+     */
+    public record BlockRun(int firstLine, int lastLine, int start, int end) { }
+
+    /**
+     * Where a block rule matches in a run of lines.
+     *
+     * <p>The selection that made the rule began somewhere in its first line and stopped somewhere
+     * in its last, so those two are matched by suffix and by prefix and the lines between them
+     * have to be exactly the ones the literal carries. That holds whether the reader selected
+     * whole lines or only part of the first and of the last.
+     *
+     * <p>Matched on content rather than on line numbers, because the two callers do not agree on
+     * them: the view counts the lines it drew, which is after the header list and the ranges have
+     * taken theirs out, and the processor counts the lines of the raw message.
+     *
+     * @param starts the document offset of each line, or null when only the line numbers are
+     *               wanted
+     */
+    public static List<BlockRun> blockRuns(Rule rule, List<String> lines, int[] starts) {
+        List<BlockRun> out = new ArrayList<>();
+        if (rule == null || !rule.isBlock() || lines == null || lines.isEmpty()) return out;
+
+        String[] segments = rule.blockLines();
+        int count = segments.length;
+        // A selection that stopped on the line break itself carries a trailing empty segment; the
+        // block ends with the line before it rather than with a line that is not there.
+        if (count > 1 && segments[count - 1].isEmpty()) count--;
+        if (count < 2 || segments[0].isEmpty() || segments[count - 1].isEmpty()) return out;
+
+        String head = segments[0];
+        String tail = segments[count - 1];
+
+        for (int i = 0; i + count <= lines.size(); i++) {
+            String first = lines.get(i);
+            if (!first.endsWith(head)) continue;
+
+            boolean middle = true;
+            for (int k = 1; k < count - 1; k++) {
+                if (!lines.get(i + k).equals(segments[k])) {
+                    middle = false;
+                    break;
+                }
+            }
+            if (!middle) continue;
+            String last = lines.get(i + count - 1);
+            if (!last.startsWith(tail)) continue;
+
+            int start = starts == null ? -1 : starts[i] + first.length() - head.length();
+            int end = starts == null ? -1 : starts[i + count - 1] + tail.length();
+            out.add(new BlockRun(i, i + count - 1, start, end));
+        }
+        return out;
     }
 
     /** The compiled rules of one template, split by what they do. */

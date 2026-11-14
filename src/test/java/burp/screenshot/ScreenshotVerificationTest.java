@@ -8,6 +8,7 @@ import burp.screenshot.design.TokenType;
 import burp.screenshot.design.Tokens;
 import burp.screenshot.engine.Rules;
 import burp.screenshot.engine.TemplateManager;
+import burp.screenshot.engine.TextCodec;
 import burp.screenshot.engine.TextProcessor;
 import burp.screenshot.model.HighlightRule;
 import burp.screenshot.model.HttpExchangeData;
@@ -143,6 +144,7 @@ public class ScreenshotVerificationTest {
                 + response.lines.size() + " response lines");
 
         checkDefaultDateHighlight();
+        checkUnicodeBody();
         checkDateSurvivesMissingField();
         checkDateRuleCoversValue();
         checkMalformedPatternIsDropped();
@@ -150,6 +152,8 @@ public class ScreenshotVerificationTest {
         checkLineRangesRemove();
         checkLineRangesBadInput();
         checkThemeListenerRemoval();
+        checkThemeApiFailureIsContained();
+        checkThemeDispose();
         checkConfigRepair();
         checkTokenSeparation();
         writePaletteSheet(true);
@@ -158,6 +162,10 @@ public class ScreenshotVerificationTest {
         checkNothingIsReadUntilLookedAt();
         checkRuleChangeKeepsScrollPosition();
         checkRuleMenu();
+        checkBlockRules();
+        checkBlockRulePaints();
+        checkSelectionSurvivesRepaint();
+        checkSelectionAfterRebuild();
         checkRedactionPresets();
         checkDefaultRedactions();
         checkGutterMenuRemovesLines();
@@ -174,6 +182,74 @@ public class ScreenshotVerificationTest {
     }
 
     // ------------------------------------------------------------------ settings
+
+    /**
+     * A body is read with the charset its header names, and as UTF-8 when it names none.
+     *
+     * <p>Montoya's {@code toString} reads one byte per character, so a Vietnamese body reached the
+     * view as "Viettel mÃ´ rá»ng". This covers the whole path: bytes in, and the text the view
+     * actually holds out to be photographed.
+     */
+    private static void checkUnicodeBody() {
+        String body = "{\"title\":\"Viettel mở rộng vùng phủ sóng 5G toàn quốc\"}";
+        byte[] head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] message = concat(head, body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        String decoded = TextCodec.decode(message, head.length, "application/json");
+        assert decoded.endsWith(body)
+                : "a body with no charset must be read as UTF-8, it decoded to \""
+                + decoded.substring(head.length) + "\"";
+
+        // A charset the header names wins over that default.
+        String latin = "caf\u00e9 \u00e0 la carte";
+        byte[] latinMessage = concat(head,
+                latin.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
+        assert TextCodec.decode(latinMessage, head.length, "text/plain; charset=ISO-8859-1")
+                .endsWith(latin) : "a declared charset must be used";
+
+        // Quoted, spaced and nonsense all have to land somewhere usable instead of throwing.
+        assert TextCodec.decode(message, head.length, "application/json; charset=\"UTF-8\"")
+                .endsWith(body) : "a quoted charset must be read";
+        assert TextCodec.decode(message, head.length, "application/json; charset=bogus")
+                .endsWith(body) : "an unknown charset must fall back to UTF-8";
+        assert TextCodec.decode(new byte[]{(byte) 0xff, (byte) 0xfe, 0x41}, 0, null) != null
+                : "malformed bytes must decode to something rather than throw";
+
+        // The view itself, because the mojibake was visible in the document and not only here.
+        TemplateConfig config = new TemplateConfig();
+        config.setHeadersToHide("");
+        HttpExchangeData data = new HttpExchangeData();
+        data.setRawResponse(TextCodec.decode(message, head.length, "application/json"));
+
+        StyledMessageView view = new StyledMessageView(false);
+        view.updateData(data, config);
+        JTextPane pane = findPane(view);
+        assert pane != null : "the view must hold a text pane";
+
+        String shown = documentText(pane);
+        String wanted = "Viettel mở rộng vùng phủ sóng 5G toàn quốc";
+        assert shown.contains(wanted)
+                : "the view must draw the body as it was written, it drew \""
+                + snippetAround(shown, "Viettel", wanted.length()) + "\"";
+        System.out.println("[PASS] unicode: undeclared UTF-8, a declared charset, a quoted one, an "
+                + "unknown one, malformed bytes, and the view drawing the text");
+    }
+
+    /** A slice of {@code text} around the first {@code needle}, for an assertion message. */
+    private static String snippetAround(String text, String needle, int length) {
+        int at = text.indexOf(needle);
+        if (at < 0) return text.length() > length ? text.substring(0, length) : text;
+        int end = Math.min(text.length(), at + length);
+        return text.substring(at, end);
+    }
+
+    private static byte[] concat(byte[] first, byte[] second) {
+        byte[] out = new byte[first.length + second.length];
+        System.arraycopy(first, 0, out, 0, first.length);
+        System.arraycopy(second, 0, out, first.length, second.length);
+        return out;
+    }
 
     /**
      * A new template must point at the response's Date header.
@@ -459,6 +535,78 @@ public class ScreenshotVerificationTest {
         assert fired.get() == afterClose
                 : "a closed listener must not fire again";
         System.out.println("[PASS] theme listener removal");
+    }
+
+    /**
+     * A host that throws must not take the tab with it, and must not be asked over and over.
+     *
+     * <p>This is the shape of the reported bug: Burp's {@code currentTheme()} throws a
+     * {@code NullPointerException} from inside Burp when its UI is not there, which is what a
+     * leftover timer sees after the extension has been unloaded. The exception is caught and the
+     * Look and Feel answers instead. What this pins down is the counting: Burp writes every one
+     * of those failures to its error output itself, so after three in a row the source has to be
+     * left alone rather than polled once a second forever.
+     */
+    private static void checkThemeApiFailureIsContained() {
+        AtomicInteger calls = new AtomicInteger();
+        Theme.Mode previous = Theme.getMode();
+        Theme.setMode(Theme.Mode.AUTO);
+
+        Theme.setSource(new Theme.Source() {
+            @Override public boolean isDark() {
+                calls.incrementAndGet();
+                throw new NullPointerException("currentTheme");
+            }
+            @Override public java.awt.Font editorFont() { return null; }
+            @Override public java.awt.Font displayFont() { return null; }
+        });
+
+        // Ten forced refreshes, which is ten seconds of a one-second poll timer.
+        for (int i = 0; i < 10; i++) {
+            Theme.refresh(true);
+        }
+
+        assert calls.get() == 3
+                : "a throwing source must be tried three times and then left alone, it was "
+                + "called " + calls.get() + " times";
+        assert Theme.tokens() != null
+                : "a throwing source must still leave a usable palette behind";
+
+        Theme.setSource(null);
+        Theme.setMode(previous);
+        System.out.println("[PASS] theme API failure: contained, source dropped after "
+                + calls.get() + " calls");
+    }
+
+    /**
+     * Unloading must stop the timer and let go of the host.
+     *
+     * <p>All of the theme state is static, so it survives the extension that created it. A timer
+     * left running past unload is the second half of the reported bug: it keeps calling a
+     * Montoya proxy Burp has already torn down, and every call is another exception in Burp's
+     * error output. The listeners go too, because each one holds a panel and a panel holds the
+     * component tree behind it.
+     */
+    private static void checkThemeDispose() {
+        AtomicInteger fired = new AtomicInteger();
+        Theme.Mode previous = Theme.getMode();
+        Theme.setMode(Theme.Mode.DARK);
+
+        AutoCloseable handle = Theme.addListener(fired::incrementAndGet);
+        assert Theme.isPolling() : "registering a listener must start the poll timer";
+
+        Theme.dispose();
+        assert !Theme.isPolling() : "dispose must stop the poll timer";
+
+        int afterDispose = fired.get();
+        Theme.setMode(Theme.Mode.LIGHT);
+        assert fired.get() == afterDispose
+                : "dispose must drop every listener, one fired after it";
+        assert !Theme.isPolling() : "polling must not come back on its own after dispose";
+
+        close(handle);
+        Theme.setMode(previous);
+        System.out.println("[PASS] theme dispose: timer stopped and listeners dropped on unload");
     }
 
     /**
@@ -992,21 +1140,55 @@ public class ScreenshotVerificationTest {
                 : "a selection the preview shows in full needs no count, the entry reads \""
                 + findMenuItem(shortMenu, "Hide \"").getText() + "\"";
 
-        // A rule is tried against one line at a time, so a selection that ran past the end of a
-        // line cannot match. Offering it would be an entry that silently does nothing, and a drag
-        // that overshoots a line is the normal way to select a long one.
+        // A selection that ran past the end of a line is a block, and it is offered as one rule
+        // that covers the whole run. A drag that overshoots a line is the normal way to select a
+        // block of a body, so the menu has to act on it rather than explain itself.
+        String blockText = "first line\nsecond line";
+        int redactionsBefore = config.getRedactions().size();
+        int highlightsBefore = config.getHighlights().size();
         JPopupMenu spanning = MessageRuleMenu.build(config,
-                target("first line\nsecond line", TokenType.TEXT, null), () -> { });
-        assert !findMenuItem(spanning, "Hide \"").isEnabled()
-                && !findMenuItem(spanning, "Blur \"").isEnabled()
-                : "a selection spanning two lines must not offer a rule that cannot match";
+                target(blockText, TokenType.TEXT, null), () -> { });
+        assert findMenuItem(spanning, "Hide \"").isEnabled()
+                && findMenuItem(spanning, "Blur \"").isEnabled()
+                : "a selection spanning two lines must offer a block rule";
         JMenu highlightMenu = null;
         for (Component c : spanning.getComponents()) {
             if (c instanceof JMenu sub) highlightMenu = sub;
         }
-        assert highlightMenu != null && !highlightMenu.isEnabled()
-                && highlightMenu.getToolTipText() != null
-                : "and it must say why, rather than leaving the user to guess";
+        assert highlightMenu != null && highlightMenu.isEnabled()
+                : "a block selection must offer the highlight colours too";
+        assert findMenuItem(spanning, "Hide \"").getText().contains("2 lines")
+                : "the entry must say how many lines it covers, it reads \""
+                + findMenuItem(spanning, "Hide \"").getText() + "\"";
+        assert !findMenuItem(spanning, "Hide \"").getText().contains("\n")
+                : "the label must stop at the first line break, it reads \""
+                + findMenuItem(spanning, "Hide \"").getText() + "\"";
+
+        click(findMenuItem(spanning, "Blur \""));
+        assert config.getRedactions().size() == redactionsBefore + 1
+                : "a block selection must add one rule, not one per line, it added "
+                + (config.getRedactions().size() - redactionsBefore);
+        RedactionRule blockRule = config.getRedactions().get(config.getRedactions().size() - 1);
+        assert blockText.equals(blockRule.getPattern())
+                : "the rule must carry the whole selection, it carries \"" + blockRule.getPattern() + "\"";
+        assert "Block, 2 lines".equals(blockRule.getName())
+                : "a block rule needs a name the list can show, it has \"" + blockRule.getName() + "\"";
+
+        click(findMenuItem(spanning, "Hide \""));
+        assert config.getRedactions().size() == redactionsBefore + 2
+                : "a block can be blurred and hidden, two rules are expected";
+
+        // And the way back out reaches the whole block, not a line of it.
+        JPopupMenu blockAgain = MessageRuleMenu.build(config,
+                target(blockText, TokenType.TEXT, null), () -> { });
+        JMenuItem removeBlock = findMenuItem(blockAgain, "Remove");
+        assert removeBlock != null : "a block rule must offer a way back out";
+        click(removeBlock);
+        assert config.getRedactions().size() == redactionsBefore
+                : "removing the block must drop both rules, " + config.getRedactions().size()
+                + " are left";
+        assert config.getHighlights().size() == highlightsBefore
+                : "removing the block must not touch a rule that was there before";
 
         // The card in Settings is where a rule made from this menu turns up, so it has to say
         // which style the rule is and let it be changed. A card that always read "Blur" would
@@ -1284,6 +1466,307 @@ public class ScreenshotVerificationTest {
 
     private static MessageRuleMenu.Target target(String text, TokenType type, String headerName) {
         return new MessageRuleMenu.Target(text, type, headerName, false);
+    }
+
+    /**
+     * A block rule covers the lines it was made from, and only those.
+     *
+     * <p>The literal carries the breaks between its lines, so it is matched against a run of lines
+     * rather than inside one. Three things can go wrong and all three are silent: it matches
+     * nowhere, it matches a run of the wrong length, or its offsets land on the wrong characters.
+     * The last one is why the offsets are checked against the text they claim to cover.
+     */
+    private static void checkBlockRules() {
+        String body = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+                + "{\n  \"a\": 1,\n  \"b\": 2\n}\n\"a\": 1";
+
+        TemplateConfig config = new TemplateConfig();
+        config.getHighlights().clear();
+        config.getRedactions().clear();
+
+        TextProcessor.ProcessedHttp plain = TextProcessor.processResponse(body, config);
+        List<String> texts = new ArrayList<>();
+        for (TextProcessor.LineItem item : plain.lines) texts.add(item.text);
+        int[] starts = new int[texts.size()];
+        int at = 0;
+        for (int i = 0; i < texts.size(); i++) {
+            starts[i] = at;
+            at += texts.get(i).length() + 1;
+        }
+        String joined = String.join("\n", texts);
+
+        String block = "{\n  \"a\": 1,\n  \"b\": 2\n}";
+        config.getRedactions().add(new RedactionRule(block, false, ScopeTarget.RESPONSE, 0));
+        Rules.Rule rule = Rules.compile(config).redactions().get(0);
+        assert rule.isBlock() : "a literal carrying a line break is a block rule";
+
+        List<Rules.BlockRun> runs = Rules.blockRuns(rule, texts, starts);
+        assert runs.size() == 1
+                : "the block must match exactly once; the later {\"a\": 1} line must not be a "
+                + "second match, it matched " + runs.size() + " times";
+        Rules.BlockRun run = runs.get(0);
+        assert run.lastLine() - run.firstLine() == 3
+                : "the block covers four lines, it covers "
+                + (run.lastLine() - run.firstLine() + 1);
+        assert block.equals(joined.substring(run.start(), run.end()))
+                : "the run must cover the block and nothing else, it covers \""
+                + joined.substring(run.start(), run.end()) + "\"";
+
+        // A drag that starts and stops mid-line, which is the ordinary way to select one.
+        config.getRedactions().clear();
+        config.getRedactions().add(new RedactionRule("  \"a\": 1,\n  \"b\": 2", false,
+                ScopeTarget.RESPONSE, 0));
+        List<Rules.BlockRun> partial = Rules.blockRuns(
+                Rules.compile(config).redactions().get(0), texts, starts);
+        assert partial.size() == 1
+                : "a block that starts and ends inside a line must match once, it matched "
+                + partial.size();
+
+        // Hidden: the covered lines leave the message, and the marker says how many went.
+        config.getRedactions().clear();
+        config.getRedactions().add(new RedactionRule(block, false, ScopeTarget.RESPONSE, 0, true));
+        TextProcessor.ProcessedHttp hidden = TextProcessor.processResponse(body, config);
+
+        boolean marker = false;
+        boolean survivor = false;
+        for (TextProcessor.LineItem item : hidden.lines) {
+            if (item.isOmission) marker = true;
+            if (item.text.equals("\"a\": 1")) survivor = true;
+            assert !item.text.contains("\"b\": 2")
+                    : "a hidden block must take its lines out, the view still has \""
+                    + item.text + "\"";
+        }
+        assert marker : "a hidden block must leave an omitted-lines marker";
+        assert survivor : "the line after a hidden block must survive";
+        assert hidden.removedLineCount == 4
+                : "a hidden four-line block removes four lines, it removed "
+                + hidden.removedLineCount;
+
+        System.out.println("[PASS] block rules: one match, exact offsets, a hidden block takes "
+                + hidden.removedLineCount + " lines out");
+    }
+
+    /** The response the block checks paint: a four-line object with a line after it. */
+    private static final String BLOCK_RESPONSE =
+            "HTTP/1.1 200 OK\r\n"
+            + "Content-Type: application/json\r\n"
+            + "\r\n"
+            + "{\r\n"
+            + "  \"user\": \"alice\",\r\n"
+            + "  \"token\": \"s3cr3t-value\",\r\n"
+            + "  \"role\": \"admin\"\r\n"
+            + "}\r\n"
+            + "tail line stays";
+
+    /**
+     * A block rule must paint every line it covers, not only the first.
+     *
+     * <p>Nothing else in the suite would catch a block that painted one line: the rule matches,
+     * the offsets are right, and the screenshot simply shows the rest of the object in clear.
+     * Each line is measured on its own, and the line after the block is measured as a control
+     * that has to stay unchanged.
+     */
+    private static void checkBlockRulePaints() throws Exception {
+        Theme.Mode previous = Theme.getMode();
+        Theme.setMode(Theme.Mode.DARK);
+
+        String block = "{\n  \"user\": \"alice\",\n  \"token\": \"s3cr3t-value\",\n"
+                + "  \"role\": \"admin\"\n}";
+        ViewFixture control = blockFixture("");
+        ViewFixture marked = blockFixture(block);
+
+        BufferedImage controlShot = paint(control.view(), VIEW_WIDTH, VIEW_HEIGHT);
+        BufferedImage markedShot = paint(marked.view(), VIEW_WIDTH, VIEW_HEIGHT);
+
+        for (String line : List.of("\"user\": \"alice\"", "\"token\": \"s3cr3t-value\"",
+                "\"role\": \"admin\"")) {
+            Rectangle rect = rectFor(control, line);
+            double changed = differingPixels(region(controlShot, rect), region(markedShot, rect));
+            assert changed > 0.50
+                    : "every line of a block must be blurred, " + line + " changed only "
+                    + pct(changed) + " of its pixels";
+        }
+
+        Rectangle after = rectFor(control, "tail line stays");
+        double untouched = differingPixels(region(controlShot, after), region(markedShot, after));
+        assert untouched < 0.02
+                : "the line after the block must be unchanged, it changed "
+                + pct(untouched);
+
+        // The other branch of the same run: a block highlight, which washes the lines instead of
+        // hiding them. It shares the run with the blur and differs only in the colour it carries,
+        // so a mix-up between the two would otherwise go unnoticed.
+        ViewFixture tinted = blockHighlightFixture(block);
+        BufferedImage tintShot = paint(tinted.view(), VIEW_WIDTH, VIEW_HEIGHT);
+        Rectangle middle = rectFor(control, "\"role\": \"admin\"");
+        double wash = differingPixels(region(controlShot, middle), region(tintShot, middle));
+        assert wash > 0.20
+                : "a block highlight must wash the lines it covers, the last one changed only "
+                + pct(wash);
+
+        write(markedShot, "test_block_dark.png");
+        Theme.setMode(previous);
+        System.out.println("[PASS] block paint: all three interior lines blurred, the line after "
+                + "the block untouched, the same run highlighted, capture build/test_block_dark.png");
+    }
+
+    /** A view over {@link #BLOCK_RESPONSE} with one block highlight instead of a redaction. */
+    private static ViewFixture blockHighlightFixture(String blockLiteral) {
+        TemplateConfig config = new TemplateConfig();
+        config.setHeadersToHide("");
+        config.getRedactions().clear();
+        config.getHighlights().clear();
+        config.getHighlights().add(new HighlightRule(blockLiteral, false, ScopeTarget.RESPONSE,
+                TemplateConfig.DEFAULT_HIGHLIGHT));
+
+        HttpExchangeData data = new HttpExchangeData();
+        data.setRawResponse(BLOCK_RESPONSE);
+
+        StyledMessageView view = new StyledMessageView(false);
+        view.updateData(data, config);
+
+        JTextPane pane = findPane(view);
+        assert pane != null : "the view must hold a text pane";
+        return new ViewFixture(view, pane, documentText(pane));
+    }
+
+    /** A view over {@link #BLOCK_RESPONSE}, with or without one block redaction. */
+    private static ViewFixture blockFixture(String blockLiteral) {
+        TemplateConfig config = new TemplateConfig();
+        config.setHeadersToHide("");
+        config.getRedactions().clear();
+        config.getHighlights().clear();
+        if (!blockLiteral.isEmpty()) {
+            config.getRedactions().add(new RedactionRule(blockLiteral, false,
+                    ScopeTarget.RESPONSE, 0));
+        }
+
+        HttpExchangeData data = new HttpExchangeData();
+        data.setRawResponse(BLOCK_RESPONSE);
+
+        StyledMessageView view = new StyledMessageView(false);
+        view.updateData(data, config);
+
+        JTextPane pane = findPane(view);
+        assert pane != null : "the view must hold a text pane";
+        return new ViewFixture(view, pane, documentText(pane));
+    }
+
+    /** A rectangle of an image, clamped to it, for comparing two renders region by region. */
+    private static BufferedImage region(BufferedImage image, Rectangle rect) {
+        Rectangle r = rect.intersection(new Rectangle(0, 0, image.getWidth(), image.getHeight()));
+        assert r.width > 0 && r.height > 0 : "the sampled region must be on the image";
+        return image.getSubimage(r.x, r.y, r.width, r.height);
+    }
+
+    /**
+     * A repaint must not take the selection away.
+     *
+     * <p>Swing paints a selection as a highlight owned by the caret, in the same highlighter the
+     * view uses for its rules. The marks pass used to clear every highlight in the pane on each
+     * repaint, so scrolling a long message dropped the selection from the screen while the text
+     * stayed selected — and left the caret holding a tag that no longer existed, which is why the
+     * selection could not come back until something else moved it.
+     */
+    private static void checkSelectionSurvivesRepaint() throws Exception {
+        ViewFixture fixture = longFixture();
+        JTextPane pane = fixture.pane();
+
+        pane.setCaretPosition(0);
+        pane.moveCaretPosition(40);
+        String selected = pane.getSelectedText();
+        assert selected != null && !selected.isEmpty()
+                : "the check needs a selection to keep";
+
+        // Headless, so nothing ever gives the pane the focus that would show the selection.
+        pane.getCaret().setSelectionVisible(true);
+        int before = pane.getHighlighter().getHighlights().length;
+        assert before >= 1 : "a visible selection is a highlight in the pane, it has " + before;
+
+        // Two renders of different heights, over a message longer than either: the second one
+        // covers a different window of lines, which is what makes the marks pass run. That is
+        // the call that used to wipe the selection.
+        paint(fixture.view(), VIEW_WIDTH, VIEW_HEIGHT);
+        paint(fixture.view(), VIEW_WIDTH, 60);
+
+        int after = pane.getHighlighter().getHighlights().length;
+        assert after >= before
+                : "a repaint must keep the selection highlight, " + before + " became " + after;
+        assert selected.equals(pane.getSelectedText())
+                : "a repaint must not change the selected text";
+        System.out.println("[PASS] selection survives a repaint: " + selected.length()
+                + " characters still selected, " + after + " highlight(s) still painted");
+    }
+
+    /**
+     * Undoing a hide must leave the view able to show a new selection.
+     *
+     * <p>An undo swaps the document back, and the caret has to let go of its selection tag before
+     * that happens or the tag outlives the text it pointed into. Letting go costs the caret its
+     * "selection visible" flag, and nothing in Swing sets that flag again on a click: only a focus
+     * change does. So a pane that was already focused selected invisibly from then on, until a
+     * right-click opened a menu and took the focus away and back, which is exactly the workaround
+     * this check exists to make unnecessary.
+     */
+    private static void checkSelectionAfterRebuild() {
+        TemplateConfig config = new TemplateConfig();
+        config.setHeadersToHide("");
+        config.getRedactions().clear();
+        config.getHighlights().clear();
+
+        HttpExchangeData data = new HttpExchangeData();
+        data.setRawResponse(BLOCK_RESPONSE);
+
+        StyledMessageView view = new StyledMessageView(false);
+        view.updateData(data, config);
+        JTextPane pane = findPane(view);
+        assert pane != null : "the view must hold a text pane";
+
+        // Headless, so nothing gives the pane the focus that would have shown its selection. This
+        // is the state Burp leaves the tab in: focused, so the caret is allowed to paint one.
+        pane.getCaret().setSelectionVisible(true);
+
+        // The user's path: hide a block, then undo it. Both steps rebuild the document.
+        config.getRedactions().add(new RedactionRule(
+                "{\n  \"user\": \"alice\",", false, ScopeTarget.RESPONSE, 0, true));
+        view.updateData(data, config);
+        config.getRedactions().clear();
+        view.updateData(data, config);
+
+        pane.setCaretPosition(5);
+        pane.moveCaretPosition(35);
+        String selected = pane.getSelectedText();
+        assert selected != null && !selected.isEmpty() : "the check needs a selection to make";
+        assert pane.getCaret().isSelectionVisible()
+                : "after an undo the caret must be able to paint a selection again";
+        assert pane.getHighlighter().getHighlights().length >= 1
+                : "the new selection must be painted, the pane has "
+                + pane.getHighlighter().getHighlights().length + " highlight(s)";
+        System.out.println("[PASS] selection after a rebuild: " + selected.length()
+                + " characters selected and painted after an undo");
+    }
+
+    /** A response long enough to be scrolled, with no rules of its own. */
+    private static ViewFixture longFixture() {
+        StringBuilder body = new StringBuilder("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n");
+        for (int i = 0; i < 300; i++) {
+            body.append("line ").append(i).append(" carrying some payload text\r\n");
+        }
+
+        TemplateConfig config = new TemplateConfig();
+        config.setHeadersToHide("");
+        config.getRedactions().clear();
+        config.getHighlights().clear();
+
+        HttpExchangeData data = new HttpExchangeData();
+        data.setRawResponse(body.toString());
+
+        StyledMessageView view = new StyledMessageView(false);
+        view.updateData(data, config);
+
+        JTextPane pane = findPane(view);
+        assert pane != null : "the view must hold a text pane";
+        return new ViewFixture(view, pane, documentText(pane));
     }
 
     /**

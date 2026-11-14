@@ -39,16 +39,54 @@ public final class Theme {
 
     private static final List<Runnable> LISTENERS = new CopyOnWriteArrayList<>();
 
+    /**
+     * How many times in a row the host source may fail before it is left alone.
+     *
+     * <p>Montoya logs every exception its own proxies throw, before the caller ever sees it, so
+     * a poll timer that keeps asking a host which is not answering is a timer that fills Burp's
+     * error output once a second. Three attempts ride out a momentary failure; after that the
+     * Look and Feel colours answer for the rest of the session, and the next
+     * {@link #setSource} starts the count over.
+     */
+    private static final int MAX_SOURCE_FAILURES = 3;
+
     private static Source source;
     private static Mode mode = Mode.AUTO;
     private static boolean dark = true;
     private static Timer poller;
 
+    /** Consecutive {@link Source} failures. Reset by {@link #setSource} and {@link #dispose}. */
+    private static int sourceFailures;
+
     private Theme() {}
 
     public static void setSource(Source s) {
         source = s;
+        sourceFailures = 0;
         refresh(true);
+    }
+
+    /**
+     * Drops the host source, the listeners and the poll timer.
+     *
+     * <p>Called when Burp unloads the extension, which is the only moment the host stops being
+     * real. Everything here is static, so without this the timer outlives the extension and
+     * keeps calling a Montoya proxy Burp has already torn down: {@code currentTheme()} is then
+     * reported to throw a {@code NullPointerException} from inside Burp itself, once a second,
+     * for as long as the JVM lives. The listener list is emptied for the same reason, one step
+     * further out: each entry holds a panel, and a panel holds the whole component tree behind
+     * it, so the extension's UI would stay reachable after it was unloaded.
+     */
+    public static synchronized void dispose() {
+        source = null;
+        sourceFailures = 0;
+        LISTENERS.clear();
+        stopPolling();
+    }
+
+    /** Whether the poll timer is running. Read by the verification suite. */
+    public static synchronized boolean isPolling() {
+        return poller != null;
     }
 
     public static void setMode(Mode m) {
@@ -96,19 +134,34 @@ public final class Theme {
         if (mode == Mode.DARK) return true;
         if (mode == Mode.LIGHT) return false;
 
-        if (source != null) {
+        Source current = source;
+        if (current != null && sourceFailures < MAX_SOURCE_FAILURES) {
             try {
-                return source.isDark();
-            } catch (RuntimeException ignored) {
-                // Fall through to the Look and Feel heuristic below.
+                boolean next = current.isDark();
+                sourceFailures = 0;
+                return next;
+            } catch (RuntimeException | LinkageError e) {
+                // A host that is not ready yet, or one that has been unloaded while a timer was
+                // still running. Both arrive as a NullPointerException thrown from inside Burp's
+                // own implementation of currentTheme(). Burp has already written that failure to
+                // its error output by the time it lands here, so counting it is all this can do:
+                // once the count is up the source is left alone and the Look and Feel answers.
+                if (++sourceFailures == MAX_SOURCE_FAILURES) {
+                    System.err.println("[PoC view] Burp's theme API failed " + MAX_SOURCE_FAILURES
+                            + " times in a row; using the Look and Feel colours until the "
+                            + "extension is reloaded.");
+                }
             }
         }
         return guessDarkFromLookAndFeel();
     }
 
     /**
-     * Fallback used only when no {@link Source} is installed (headless tests, or a host
-     * that fails to report its theme). Never used to *set* colors in Burp.
+     * Fallback used when no {@link Source} is installed (headless tests, a host that fails to
+     * report its theme, or one that has just been unloaded). Never used to *set* colors in Burp.
+     *
+     * <p>Burp swaps its Look and Feel when the theme changes, so the panel colour read here
+     * moves with the theme as well, which is what lets this stand in for the API.
      */
     private static boolean guessDarkFromLookAndFeel() {
         Color bg = UIManager.getColor("Panel.background");

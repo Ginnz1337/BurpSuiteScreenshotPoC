@@ -5,6 +5,7 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
+import burp.api.montoya.http.message.HttpMessage;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -16,6 +17,7 @@ import burp.api.montoya.ui.editor.extension.HttpRequestEditorProvider;
 import burp.api.montoya.ui.editor.extension.HttpResponseEditorProvider;
 import burp.screenshot.design.Theme;
 import burp.screenshot.engine.TemplateManager;
+import burp.screenshot.engine.TextCodec;
 import burp.screenshot.model.HttpExchangeData;
 import burp.screenshot.model.TemplateConfig;
 import burp.screenshot.ui.PocEditorPanel;
@@ -52,6 +54,12 @@ public class BurpExtender implements BurpExtension {
         this.templateManager = new TemplateManager();
 
         api.extension().setName("Screenshot PoC");
+
+        // Registered before anything else is wired up. The theme state in Theme is static and a
+        // timer polls the host from it, so unloading the extension has to take both down: Burp
+        // nulls out its own side on unload, and a timer left running then calls into it once a
+        // second, each call a NullPointerException in Burp's error output.
+        api.extension().registerUnloadingHandler(Theme::dispose);
 
         installThemeSource();
 
@@ -250,6 +258,9 @@ public class BurpExtender implements BurpExtension {
      * <p>Montoya reports the current theme but fires no event when it changes, so
      * {@link Theme} polls. Everything the extension paints resolves its colors from the
      * tokens on each repaint, so no restart is needed after a theme switch.
+     *
+     * <p>The source installed here is dropped again by the unloading handler registered in
+     * {@link #initialize}, so the poll stops with the extension rather than outliving it.
      */
     private void installThemeSource() {
         Theme.setSource(new Theme.Source() {
@@ -273,18 +284,27 @@ public class BurpExtender implements BurpExtension {
     /**
      * The two raw messages, which is all the view draws.
      *
-     * <p>The URL, the timing and the response size are no longer collected: the card that
-     * showed them is gone, and a field nothing reads only invites a later reader to trust it.
+     * <p>Decoded here rather than through the host's {@code toString}, which reads a message one
+     * byte per character: on a UTF-8 body that is the difference between "Viettel mở rộng" and
+     * "Viettel mÃ´ rá»ng", and the second one is a screenshot nobody can read. The URL, the timing
+     * and the response size are no longer collected: the card that showed them is gone, and a
+     * field nothing reads only invites a later reader to trust it.
      */
     private static HttpExchangeData convertExchangeData(HttpRequestResponse reqRes) {
         HttpExchangeData data = new HttpExchangeData();
 
         if (reqRes.request() != null) {
-            data.setRawRequest(reqRes.request().toString());
+            data.setRawRequest(decode(reqRes.request()));
         }
         if (reqRes.hasResponse() && reqRes.response() != null) {
-            data.setRawResponse(reqRes.response().toString());
+            data.setRawResponse(decode(reqRes.response()));
         }
         return data;
+    }
+
+    /** One message as text, using the charset its own {@code Content-Type} names. */
+    private static String decode(HttpMessage message) {
+        return TextCodec.decode(message.toByteArray().getBytes(), message.bodyOffset(),
+                message.headerValue("Content-Type"));
     }
 }
